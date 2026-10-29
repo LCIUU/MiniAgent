@@ -1,0 +1,44 @@
+# ===== 机密与本地配置 =====
+.env
+.env.local
+*.env
+agent_settings.json
+mcp.json
+.agent_secret_key
+.agent-settings-*.tmp
+
+# ===== 运行产物 =====
+*.log
+backend_restart.log
+backend_restart.err.log
+.agent_logs/
+.agent_uploads/
+.agent_backups/
+.agent/memory.md
+
+# ===== Python =====
+.venv/
+venv/
+__pycache__/
+*.py[cod]
+.pytest_cache/
+.mypy_cache/
+.ruff_cache/
+.tmp/
+tests/.tmp/
+dist/
+build/
+*.egg-info/
+
+# ===== Node =====
+node_modules/
+dist/
+.vite/
+*.tsbuildinfo
+
+# ===== IDE / OS =====
+.idea/
+.vscode/
+.DS_Store
+Thumbs.db
+desktop.ini
