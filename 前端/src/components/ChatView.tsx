@@ -3,7 +3,8 @@ import { useStore, useAgent } from "../useAgent";
 import type { AttachmentMeta, StreamMessage } from "../types";
 import { ApprovalCard, QuestionCard } from "./ToolCard";
 import { Markdown } from "./Markdown";
-import { ProcessTimeline, answerOf, hasLiveItem } from "./ProcessTimeline";
+import { ProcessTimeline } from "./ProcessTimeline";
+import { answerOf, hasLiveItem } from "../utils/timeline";
 import { BASE } from "../api/client";
 import { copyText } from "../utils/clipboard";
 
