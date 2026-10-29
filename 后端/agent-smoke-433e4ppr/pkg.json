@@ -1,0 +1,11 @@
+{
+  "name": "x",
+  "version": "1.0.0",
+  "scripts": {
+    "build": "tsc",
+    "test": "vitest run"
+  },
+  "list": [
+    2
+  ]
+}

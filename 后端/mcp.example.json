@@ -1,0 +1,14 @@
+{
+  "mcpServers": {
+    "filesystem": {
+      "transport": "stdio",
+      "command": "npx",
+      "args": [
+        "-y",
+        "@modelcontextprotocol/server-filesystem",
+        "C:/Users/LCIU/Desktop/代码智能体"
+      ],
+      "env": {}
+    }
+  }
+}

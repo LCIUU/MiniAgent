@@ -1,0 +1,26 @@
+# ===== 机密与本地配置 =====
+.env
+.env.local
+agent_settings.json
+mcp.json
+.agent_secret_key
+.agent-settings-*.tmp
+
+# ===== 运行产物 =====
+*.log
+.agent_logs/
+.agent_uploads/
+.agent_backups/
+.agent/
+
+# ===== Python =====
+.venv/
+__pycache__/
+*.py[cod]
+.pytest_cache/
+tests/.tmp/
+.mypy_cache/
+.ruff_cache/
+dist/
+build/
+*.egg-info/

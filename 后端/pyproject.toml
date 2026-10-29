@@ -1,0 +1,51 @@
+[project]
+name = "coding-agent-backend"
+version = "0.1.0"
+description = "AI Coding Agent backend - FastAPI + LangGraph, Codex-like"
+requires-python = ">=3.13"
+dependencies = [
+    "fastapi>=0.115",
+    "uvicorn[standard]>=0.32",
+    "sse-starlette>=2.1",
+    "pydantic>=2.9",
+    "pydantic-settings>=2.6",
+    "sqlalchemy[asyncio]>=2.0.36",
+    "asyncpg>=0.30",
+    "langchain>=0.3.14",
+    "langchain-core>=0.3.29",
+    "langchain-openai>=0.2.14",
+    "langchain-deepseek>=1.0",
+    "langgraph>=0.2.60",
+    "langchain-mcp-adapters>=0.1.1",
+    "mcp>=1.2.0",
+    "httpx>=0.28",
+    "python-dotenv>=1.0",
+    "tiktoken>=0.8",
+    "orjson>=3.10",
+    "python-multipart>=0.0.32",
+    "pypdf>=6.16.2",
+    "cryptography>=42.0",
+]
+
+[project.optional-dependencies]
+deepagents = ["deepagents>=0.7.10"]
+
+[dependency-groups]
+dev = ["ruff>=0.8", "pytest>=8"]
+
+[[tool.uv.index]]
+url = "http://pypi.tuna.tsinghua.edu.cn/simple"
+default = true
+
+[tool.uv]
+package = false
+
+[tool.ruff]
+target-version = "py313"
+line-length = 120
+
+[tool.ruff.lint]
+# 只启用高价值规则；B008 与 FastAPI 的 Depends/File 参数写法冲突，忽略
+# RUF001-003 是对中文全角标点的误报；E501 在中文注释/提示词里不适用
+select = ["E", "F", "I", "UP", "B", "SIM", "RUF"]
+ignore = ["B008", "E501", "RUF001", "RUF002", "RUF003", "SIM105", "SIM115"]
