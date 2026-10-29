@@ -4,6 +4,7 @@ OpenAI 兼容端点在收到「tool_calls 未配对」的历史时会直接返�
 曾出现重复读取/重复计划护栏触发后 run 直接报错的问题。
 """
 import asyncio
+import shutil
 import sys
 import tempfile
 from pathlib import Path
@@ -155,5 +156,76 @@ async def history_case() -> None:
     print("PASS: 历史写操作不影响本轮落盘检测")
 
 
+async def final_answer_closes_plan() -> None:
+    """模型给出最终回答后不得再被计划状态强制续跑：剩余步骤自动收敛。"""
+    import app.agent.graph as g
+    from app.agent.graph import execute_node
+    from app.tools.context import ApprovalManager, ToolContext
+    from app.tools.files import make_file_tools
+
+    class MockPlanThenDone:
+        _llm_type = "mock"
+
+        def __init__(self):
+            self.calls = 0
+
+        async def astream(self, messages, **kwargs):
+            self.calls += 1
+            if self.calls == 1:
+                yield type("M", (), {
+                    "content": "",
+                    "tool_calls": [{"id": "r1", "name": "read_file", "args": {"path": "a.txt"}}],
+                })()
+            elif self.calls == 2:
+                yield type("M", (), {
+                    "content": "",
+                    "tool_calls": [{"id": "t1", "name": "write_todos", "args": {"todos": [
+                        {"content": "读取文件", "status": "completed"},
+                        {"content": "验证结果", "status": "pending"},
+                    ]}}],
+                })()
+            else:
+                yield type("M", (), {"content": "任务完成", "tool_calls": []})()
+
+        def bind_tools(self, tools):
+            return self
+
+        def with_retry(self, **kw):
+            return self
+
+    original = g.init_chat_models
+    ws = tempfile.mkdtemp()
+    (Path(ws) / "a.txt").write_text("hello", encoding="utf-8")
+    events: list[dict] = []
+
+    async def emit(ev):
+        events.append(ev)
+
+    model = MockPlanThenDone()
+    ctx = ToolContext(workspace=ws, emit=emit, approvals=ApprovalManager(mode="auto"))
+    state = {
+        "request": "看看 a.txt 并验证", "workspace": ws, "messages": [], "plan": [],
+        "tool_rounds": 0,
+        "summary": "", "summary_count": 0, "run_id": "r3", "session_id": "s3",
+        "stopped": False, "error": None, "emit": emit,
+        "approvals": ApprovalManager(mode="auto"), "stop_event": asyncio.Event(),
+        "_tools": list(make_file_tools(ctx)),
+    }
+    g.init_chat_models = lambda **kw: model
+    try:
+        result = await execute_node(state)
+    finally:
+        g.init_chat_models = original
+        shutil.rmtree(ws, ignore_errors=True)
+
+    assert model.calls == 3, f"最终回答后仍被强制续跑：模型被调用 {model.calls} 次"
+    assert not any(e.get("status") == "plan_incomplete_blocked" for e in events)
+    assert result["todos"] and all(t["status"] == "completed" for t in result["todos"]), result["todos"]
+    plans = [e for e in events if e.get("type") == "plan"]
+    assert plans and all(t["status"] == "completed" for t in plans[-1]["todos"])
+    print("PASS: 最终回答后不再强制续跑，剩余计划自动收敛")
+
+
 asyncio.run(main())
 asyncio.run(history_case())
+asyncio.run(final_answer_closes_plan())

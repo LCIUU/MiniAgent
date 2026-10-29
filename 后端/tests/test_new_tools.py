@@ -4,7 +4,9 @@ from __future__ import annotations
 
 import asyncio
 import json
+import os
 import shutil
+import subprocess
 import sys
 import tempfile
 from pathlib import Path
@@ -273,10 +275,24 @@ def test_git_stash_requires_repo():
     if shutil.which("git") is None:
         return
     ws = _workspace()
+    # 临时目录可能落在项目仓库内（git 会向上发现父仓库），用 ceiling 模拟
+    # "工作区之上没有仓库"的真实场景，避免用例随运行位置漂移。
+    repo = subprocess.run(
+        ["git", "rev-parse", "--show-toplevel"],
+        cwd=ws, capture_output=True, text=True, encoding="utf-8", errors="replace",
+    ).stdout.strip()
+    old_ceiling = os.environ.get("GIT_CEILING_DIRECTORIES")
+    if repo:
+        os.environ["GIT_CEILING_DIRECTORIES"] = repo
     try:
         tools = _make_tools(ws)
         assert "不是 Git 仓库" in _invoke(tools, "git_stash", action="list")
     finally:
+        if repo:
+            if old_ceiling is None:
+                os.environ.pop("GIT_CEILING_DIRECTORIES", None)
+            else:
+                os.environ["GIT_CEILING_DIRECTORIES"] = old_ceiling
         shutil.rmtree(ws, ignore_errors=True)
 
 

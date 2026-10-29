@@ -1242,6 +1242,7 @@ async def _execute_node(state: AgentState, tool_result_cache: ToolResultCache) -
     _file_modified: set[str] = set()         # 被 write/edit 过的路径（修改后可重读）
     # 本轮（execute 阶段）是否实际执行过操作：只看本轮派发的工具调用，
     # 不能扫描全部 messages——历史里上一轮写过文件会让本轮“只说不做”被误判为已完成。
+    _did_work = False       # 执行过任意真实工具（含只读），用于判断是否“只写计划不干活”
     _did_productive = False
     _did_write = False
     # 上一轮思考（仅用于下一轮系统侧衔接，不写入消息历史）
@@ -1542,12 +1543,16 @@ async def _execute_node(state: AgentState, tool_result_cache: ToolResultCache) -
             break
 
         text = "".join(stream_text)
+        _repeat_text = False
         if text.strip():
             _norm = _norm_ws(text)
-            if _norm and _norm not in _recent_texts:
-                _recent_texts.append(_norm)
-                if len(_recent_texts) > _RECENT_TEXT_WINDOW:
-                    _recent_texts.pop(0)
+            if _norm:
+                if _norm in _recent_texts:
+                    _repeat_text = True
+                else:
+                    _recent_texts.append(_norm)
+                    if len(_recent_texts) > _RECENT_TEXT_WINDOW:
+                        _recent_texts.pop(0)
         tool_calls = tool_calls_acc
         # 模型偶尔把 write_todos 当纯文本输出：解析为计划更新后继续循环，
         # 避免把工具调用文本当成最终回答（最多兜底 2 次，防止原地循环）
@@ -1573,8 +1578,10 @@ async def _execute_node(state: AgentState, tool_result_cache: ToolResultCache) -
                 )
                 continue
         if text or tool_calls:
+            # 复述出来的中间旁白不再原样写回历史：历史里已经有一份相同内容，
+            # 重复写入会让模型在后续轮次继续模仿这种复述（自我强化）。
             messages.append(AIMessage(
-                content=text or "",
+                content="" if (_repeat_text and tool_calls) else (text or ""),
                 tool_calls=_public_tool_calls(tool_calls) if tool_calls else [],
             ))
 
@@ -1800,32 +1807,51 @@ async def _execute_node(state: AgentState, tool_result_cache: ToolResultCache) -
                 "detail": "模型未执行任何操作就想结束，已提醒其实际执行",
             })
             continue
-        # 计划未完成护栏：仍有 pending（尚未开始）的步骤却想直接收尾 →
-        # 提醒模型继续执行或显式更新计划状态（最多一次，避免死循环）。
+        # 计划收尾：计划是模型自管的辅助清单，模型给出最终回答即视为它判定任务结束。
+        # 若本轮已执行过真实工具，剩余未完成步骤只是模型不再需要的旧清单 → 直接收敛，
+        # 不再用提醒强行续跑（续跑时模型无新任务可做，只会按 temperature=0 重放旧输出）。
+        # 只有“只写了计划、一步没做”才可能是假完成，保留一次提醒。
         if (
             not tool_calls
             and not _summary_mode
-            and not state.get("_incomplete_todos_nudged")
-            and any(t.get("status") == "pending" for t in (state.get("todos") or []))
-        ):
-            pending = [t for t in state.get("todos") or [] if t.get("status") == "pending"]
-            remaining = "、".join(str(t.get("content", ""))[:40] for t in pending[:5])
-            state["_incomplete_todos_nudged"] = True
-            messages.append(_nudge(
-                f"【计划未完成提醒】执行计划中仍有未开始的步骤：{remaining}。当前不能直接收尾。\n"
-                "请继续执行剩余步骤；若这些步骤确实已不再需要，请调用 write_todos "
-                "把对应项标记为 completed（或移除），再给出最终回答。"
-            ))
-            logger.warning(
-                "[run:%s] 计划仍有 pending 步骤却准备收尾，已提醒模型 (round %d, pending=%d)",
-                state.get("run_id", ""), rounds, len(pending),
+            and any(
+                t.get("status") != "completed" for t in (state.get("todos") or [])
             )
-            await _emit(state, {
-                "type": "status",
-                "status": "plan_incomplete_blocked",
-                "detail": f"计划仍有 {len(pending)} 个未开始步骤，已提醒模型继续执行",
-            })
-            continue
+        ):
+            if _did_work:
+                todos = apply_todos(state, [
+                    {"content": str(t.get("content", "")), "status": "completed"}
+                    for t in (state.get("todos") or [])
+                ])
+                await _emit(state, {"type": "plan", "steps": state["plan"], "todos": todos})
+                logger.info(
+                    "[run:%s] 模型已给出最终回答，%d 个未完成计划步骤随运行收敛 (round %d)",
+                    state.get("run_id", ""), len(todos), rounds,
+                )
+            elif not state.get("_incomplete_todos_nudged"):
+                remaining_todos = [
+                    t for t in (state.get("todos") or []) if t.get("status") != "completed"
+                ]
+                remaining = "、".join(
+                    str(t.get("content", ""))[:40] for t in remaining_todos[:5]
+                )
+                state["_incomplete_todos_nudged"] = True
+                messages.append(_nudge(
+                    f"【计划未完成提醒】执行计划中仍有未完成的步骤：{remaining}，"
+                    "而本次运行尚未执行任何实际操作工具。当前不能直接收尾。\n"
+                    "请继续执行剩余步骤；若这些步骤确实已不再需要，请调用 write_todos "
+                    "把对应项标记为 completed（或移除），再给出最终回答。"
+                ))
+                logger.warning(
+                    "[run:%s] 只写了计划但未执行任何工具就想收尾，已提醒模型 (round %d)",
+                    state.get("run_id", ""), rounds,
+                )
+                await _emit(state, {
+                    "type": "status",
+                    "status": "plan_incomplete_blocked",
+                    "detail": f"计划仍有 {len(remaining_todos)} 个未完成步骤，已提醒模型继续执行",
+                })
+                continue
         if not tool_calls:
             logger.info("[run:%s] execute_node 退出: 模型无工具调用，正常给出最终回答 (round %d, text=%d chars)", state.get("run_id",""), rounds, len(text))
             break
@@ -2137,6 +2163,7 @@ async def _execute_node(state: AgentState, tool_result_cache: ToolResultCache) -
 
         # 记录本轮实际派发过的工具（落盘/收尾护栏只看本轮，不跨历史累计）
         for _, tc in real_calls:
+            _did_work = True
             _tc_name = tc.get("name", "")
             _tc_args = tc.get("args") or {}
             if _tool_mutates(_tc_name, _tc_args):

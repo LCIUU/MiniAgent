@@ -38,6 +38,8 @@ def isolated(tmp_path, monkeypatch):
 
 def _write(path, data: dict):
     path.write_text(json.dumps(data), encoding="utf-8")
+    # 连续写入可能落在同一 mtime_ns 刻度内，显式失效设置缓存，避免读到上一次内容
+    config_mod._SETTINGS_CACHE.update({"path": "", "mtime_ns": -1, "data": {}})
 
 
 def test_catalog_routing_and_hot_switch(isolated):
