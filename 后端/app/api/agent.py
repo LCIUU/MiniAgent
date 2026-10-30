@@ -148,7 +148,14 @@ def _serialize_run_messages(messages: list, initial_ids: set[int]) -> list[dict]
             last_summary = i
     items: list[dict] = []
     for i, m in enumerate(messages):
-        if i <= last_summary or id(m) in initial_ids or isinstance(m, SystemMessage):
+        if i <= last_summary or id(m) in initial_ids:
+            continue
+        if isinstance(m, SystemMessage):
+            # 头部系统提示每轮重建、不入库；内部提醒（is_nudge）必须原样入库：
+            # 它们当时就在模型上下文里，丢掉会让下一轮重建的历史与上一轮实际发送的
+            # 前缀不一致，提醒之后的所有内容都无法命中隐式缓存。
+            if getattr(m, "additional_kwargs", {}).get("is_nudge"):
+                items.append({"role": "system", "content": _json_content(m.content)})
             continue
         if isinstance(m, HumanMessage):
             extra = getattr(m, "additional_kwargs", {})
@@ -191,6 +198,9 @@ def _messages_from_run(raw: Any, db_ts: float | None = None) -> list:
             content = ""
         if role == "human":
             out.append(HumanMessage(content=content, additional_kwargs=dict(extra)))
+        elif role == "system":
+            # 历史里的内部提醒：原样放回原位，保证前缀与上一轮实际发送的一致
+            out.append(SystemMessage(content=content, additional_kwargs={**extra, "is_nudge": True}))
         elif role == "ai":
             out.append(AIMessage(
                 content=content,
@@ -265,9 +275,14 @@ def _history_from_db(messages: list[Message]) -> list:
         ts = _db_ts_of(m)
         extra: dict[str, Any] = {"db_ts": ts} if ts is not None else {}
         if m.role == "user":
-            # 新数据带 request_content（含附件提取正文）；旧数据回退到纯文本 + 附件名
-            stored_request = (getattr(m, "request_content", None) or "").strip()
-            content = stored_request or ((m.content or "") + att_note)
+            # 新数据带 request_content（含附件提取正文）；旧数据回退到纯文本 + 附件名。
+            # 原样使用、不做 strip：本轮实际发送的就是这个字符串，任何首尾空白差异
+            # 都会让重建的历史与上一轮的前缀对不上，其后的上下文全部无法命中缓存。
+            stored_request = getattr(m, "request_content", None)
+            if isinstance(stored_request, str) and stored_request.strip():
+                content = stored_request
+            else:
+                content = (m.content or "") + att_note
             out.append(HumanMessage(content=content, additional_kwargs=dict(extra)))
         elif m.role == "assistant":
             stored = getattr(m, "context_messages", None)

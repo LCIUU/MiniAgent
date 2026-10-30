@@ -152,6 +152,7 @@ SYSTEM_PROMPT = """
    - 跑测试用 run_tests（可只跑相关文件或关键字）；需要构建 / lint 时再用 run_checks。
    - 启动 dev server 后用 wait_for_server 等就绪；端口占用用 list_ports 查，需要进程详情用 port_info(port)（只读），禁止杀无关进程。
    - 交付前可用 secret_scan 自查是否硬编码密钥；文件乱码用 check_encoding 检查（fix=true 才转换）。
+   - 了解本机系统/硬件/已装软件/运行时版本用 system_info（默认 overview，可按节读 os,cpu,memory,disk,gpu,network,runtimes,packages,software,processes,battery,env 或 all）；查项目里 Vite/Vue/React 等依赖的实际安装版本用 system_info(sections="packages")，不要用 terminal 逐个敲 systeminfo / ipconfig / npm ls 试探。
    - 需要用户做选择时用 ask_user(question, options)（options 用换行/逗号分隔，留空让用户自由填写），
      一次只问一个最关键的问题；用户取消或超时未答时不要假设答案，先做能确定的部分。
 
@@ -208,7 +209,14 @@ def _system_message(state: AgentState) -> SystemMessage:
         extra = ""
     if extra:
         parts.append(extra)
-    return SystemMessage(content="\n\n".join(parts))
+    content = "\n\n".join(parts)
+    # 系统提示位于缓存前缀最前端：内容一变，整个会话的隐式缓存全部作废。
+    # 打印指纹便于跨轮比对，定位"命中率突然掉档"是否由提示变化引起。
+    logger.info(
+        "[cache] 系统提示 %d 字符 sha1=%s",
+        len(content), hashlib.sha1(content.encode("utf-8")).hexdigest()[:12],
+    )
+    return SystemMessage(content=content)
 
 
 def _limit_chars() -> int:
@@ -668,12 +676,11 @@ def _norm_ws(text: str) -> str:
 # 不能只看长度——复杂任务正常思考 4000 字并不算多，按长度硬切会把
 # 有意义的推理掐死在半路（截断后 reasoning 又不会进入下一轮上下文，
 # 模型只能从零重推，于是思考区反复出现同一段分析）。这里用尾部窗口的
-# 4-gram 命中率判断是不是在复读，另保留一个很高的绝对上限兜底。
+# 4-gram 命中率判断是不是在复读，不对思考长度设任何上限。
 _REASONING_SELF_REPEAT_MIN_CHARS = 2400
 _REASONING_SELF_REPEAT_WINDOW = 800
 _REASONING_SELF_REPEAT_STEP = 800
 _REASONING_SELF_REPEAT_THRESHOLD = 0.92
-_REASONING_ABS_LIMIT_CHARS = 12000
 
 
 def _reasoning_self_repeat(text: str) -> bool:
@@ -1063,7 +1070,13 @@ class _StreamAccumulator:
 
 
 def _accumulate_usage(state: AgentState, response_chunk: Any) -> None:
-    """从聚合响应提取 token 用量并累计到 state（模型未返回时静默跳过）。"""
+    """从聚合响应提取 token 用量并累计到 state（模型未返回时静默跳过）。
+
+    同时累计隐式缓存命中量（``prompt_tokens_details.cached_tokens``），并把每次
+    调用的命中率写进日志：前缀稳定时该值应接近 100%，明显掉档说明上下文前缀
+    被打断（压缩、系统提示/工具列表变化、降级模型切换）。前缀是否稳定直接决定
+    命中率，翻日志即可定位是哪一次调用开始失效。
+    """
     if response_chunk is None:
         return
     usage = getattr(response_chunk, "usage_metadata", None)
@@ -1073,11 +1086,30 @@ def _accumulate_usage(state: AgentState, response_chunk: Any) -> None:
     output_t = usage.get("output_tokens") or 0
     if not input_t and not output_t:
         return
+    detail = usage.get("input_token_details")
+    cached_t = 0
+    if isinstance(detail, dict):
+        cached_t = int(detail.get("cache_read") or detail.get("cached_tokens") or 0)
     acc = state.get("token_usage") or {"input_tokens": 0, "output_tokens": 0, "llm_calls": 0}
     acc["input_tokens"] += input_t
     acc["output_tokens"] += output_t
+    acc["cache_read_tokens"] = int(acc.get("cache_read_tokens") or 0) + cached_t
     acc["llm_calls"] += 1
     state["token_usage"] = acc
+
+    call_no = int(acc["llm_calls"])
+    logger.info(
+        "[cache] 第%d次调用 输入=%d 命中=%d (%.1f%%)",
+        call_no, input_t, cached_t, 100.0 * cached_t / max(int(input_t), 1),
+    )
+    prev = int(state.get("_usage_prev_input") or 0)
+    state["_usage_prev_input"] = int(input_t)
+    if prev and cached_t < prev * 0.6:
+        logger.warning(
+            "[cache] 前缀疑似失效：本次命中 %d，不足上次输入 %d 的 60%%"
+            "（常见原因：上下文压缩、系统提示/工具列表变化、降级模型切换）",
+            cached_t, prev,
+        )
 
 
 async def _make_llm(state: AgentState) -> Any:
@@ -1347,9 +1379,8 @@ async def _execute_node(state: AgentState, tool_result_cache: ToolResultCache) -
             tool_calls_acc = []
             acc = _StreamAccumulator()
             reasoning = ReasoningAcc(state.get("request"))
-            _reasoning_chars = 0  # 累计思考字符数，用于检测推理死循环
-            _reasoning_limit = _REASONING_ABS_LIMIT_CHARS  # 绝对上限，仅极端情况兜底
-            _reasoning_cut = ""  # "self_repeat" | "too_long"：本轮流式被推理护栏中断
+            _reasoning_chars = 0  # 累计思考字符数，用于检测原地复读
+            _reasoning_cut = ""  # "self_repeat"：本轮流式被复读检测中断
             _next_repeat_check = _REASONING_SELF_REPEAT_MIN_CHARS
             # Qwen 偶尔在正文之后才下发最后一句 reasoning（"所有步骤已完成，让我给出
             # 最终回答"）。正文开始后的思考先暂存：若本轮还有工具调用则补发；若本轮
@@ -1482,31 +1513,17 @@ async def _execute_node(state: AgentState, tool_result_cache: ToolResultCache) -
                                 _reasoning_cut = "self_repeat"
                                 logger.warning(
                                     "[run:%s] 推理自重复护栏触发: reasoning=%d chars，"
-                                    "中断流式输出，强制收敛到行动",
+                                    "中断流式输出，避免原地复读",
                                     state.get("run_id", ""), _reasoning_chars,
                                 )
                                 await _emit(state, {
                                     "type": "status",
                                     "status": "reasoning_self_repeat",
-                                    "detail": "思考内容开始重复，已中断并要求直接行动",
+                                    "detail": "思考内容开始重复，已中断重复段落",
                                 })
                                 break
                             if _reasoning_chars >= _next_repeat_check:
                                 _next_repeat_check += _REASONING_SELF_REPEAT_STEP
-                            # 绝对长度兜底：正常长推理允许，只有极端情况才触发
-                            if _reasoning_chars > _reasoning_limit:
-                                _reasoning_cut = "too_long"
-                                logger.warning(
-                                    "[run:%s] 推理长度兜底触发: reasoning=%d chars > %d, "
-                                    "中断流式输出，强制收敛",
-                                    state.get("run_id", ""), _reasoning_chars, _reasoning_limit,
-                                )
-                                await _emit(state, {
-                                    "type": "status",
-                                    "status": "reasoning_too_long",
-                                    "detail": f"推理过程已超过 {_reasoning_limit} 字，强制收敛到行动",
-                                })
-                                break  # 提前终止流，用已有部分结果继续
                     else:
                         # 出现非推理输出（正文或工具参数）→ 本段思考结束：先把被闸门
                         # 暂存的短思考连同时长一起下发，再通知前端收口实时计时
@@ -1706,33 +1723,25 @@ async def _execute_node(state: AgentState, tool_result_cache: ToolResultCache) -
                 tool_calls=_public_tool_calls(tool_calls) if tool_calls else [],
             ))
 
-        # 推理死循环护栏（content 版）：某些模型把思考放在 content 而非 reasoning 字段里。
-        # 如果 text 很长（说明写了大量思考内容）但 tool_calls 为空（没有行动） → 强制收敛。
-        # 总结模式下模型只输出最终回答，不再用"思考过长"类护栏打断（否则会反复收敛循环）
+        # 不对回答或思考设置任何长度上限：长回答直接作为最终回答收尾。
+        # 这里只处理一种真死循环——流式阶段检测到思考原地复读且本轮没有工具调用。
         _summary_mode = bool(state.get("_loop_summary_mode"))
-        _text_too_long = len(text) > 2000 and not tool_calls and not _summary_mode
-        # 推理死循环护栏（reasoning 版）：流式阶段已被中断（原地复读/超长）且无 tool_calls
-        _reasoning_guard_triggered = bool(_reasoning_cut) and not tool_calls and not _summary_mode
-        if _text_too_long or _reasoning_guard_triggered:
-            if _text_too_long:
-                reason = "content 过长且无工具调用"
-            elif _reasoning_cut == "self_repeat":
-                reason = "思考原地重复且无工具调用"
-            else:
-                reason = "reasoning 过长且无工具调用"
+        _reasoning_guard_triggered = _reasoning_cut == "self_repeat" and not tool_calls and not _summary_mode
+        if _reasoning_guard_triggered:
+            reason = "思考原地重复且无工具调用"
             _converge = int(state.get("_converge_nudges", 0)) + 1
             state["_converge_nudges"] = _converge
             if _converge >= 2:
                 if text.strip():
-                    # 两次超长且仍无工具调用：按最终回答收尾，避免把长回答反复丢弃造成死循环
+                    # 复读中断后已有正文：按最终回答收尾，避免把回答反复丢弃造成死循环
                     logger.warning(
-                        "[run:%s] 推理死循环护栏第二次触发，按最终回答收尾: %s, text=%d, reasoning=%d",
+                        "[run:%s] 复读护栏第二次触发，按最终回答收尾: %s, text=%d, reasoning=%d",
                         state.get("run_id", ""), reason, len(text), _reasoning_chars,
                     )
                     await _emit(state, {
                         "type": "status",
                         "status": "reasoning_loop_blocked",
-                        "detail": f"推理死循环拦截: {reason}，按最终回答收尾",
+                        "detail": f"复读拦截: {reason}，按最终回答收尾",
                     })
                     break
                 state["_loop_summary_mode"] = True
@@ -1742,38 +1751,30 @@ async def _execute_node(state: AgentState, tool_result_cache: ToolResultCache) -
                     "系统已自动切换为总结模式，请直接给出简洁的最终回答。"
                 ))
                 logger.warning(
-                    "[run:%s] 推理死循环护栏第二次触发且无正文，切换为总结模式 (reasoning=%d)",
+                    "[run:%s] 复读护栏第二次触发且无正文，切换为总结模式 (reasoning=%d)",
                     state.get("run_id", ""), _reasoning_chars,
                 )
                 await _emit(state, {
                     "type": "status",
                     "status": "reasoning_loop_blocked",
-                    "detail": f"推理死循环拦截: {reason}，已切换为总结模式",
+                    "detail": f"复读拦截: {reason}，已切换为总结模式",
                 })
                 continue
-            if _reasoning_cut == "self_repeat":
-                cut_detail = "你刚才的思考开始重复同一段分析，已被系统中断。"
-            elif _reasoning_guard_triggered:
-                cut_detail = f"你刚才的思考过程超过了 {_reasoning_chars} 字，已被系统截断。"
-            else:
-                cut_detail = f"你刚才输出了超过 {len(text)} 字的分析，但没有采取行动。"
             nudge = (
-                f"【强制收敛 · 推理死循环检测 · 系统自动提醒】{cut_detail}"
-                "你还没有发起工具调用或给出最终回答。已有分析会保留到下一轮，"
-                "本轮直接基于它行动：调用一个工具去执行/验证，或给出当前能给出的最佳回答。"
-                "不要从头重新分析，也不要重复之前的推理。"
+                "【系统自动提醒】你刚才的思考开始重复同一段分析，已被系统中断；已有分析会保留到下一轮。"
+                "请直接给出当前能给出的最佳回答，或换一种做法继续，不要重复之前的推理。"
             )
             messages.append(_nudge(nudge))
             logger.warning(
-                "[run:%s] 推理死循环护栏触发: %s, text=%d, reasoning=%d, tool_calls=%d",
+                "[run:%s] 复读护栏触发: %s, text=%d, reasoning=%d, tool_calls=%d",
                 state.get("run_id", ""), reason, len(text), _reasoning_chars, len(tool_calls),
             )
             await _emit(state, {
                 "type": "status",
                 "status": "reasoning_loop_blocked",
-                "detail": f"推理死循环拦截: {reason}",
+                "detail": f"复读拦截: {reason}",
             })
-            continue  # 进入下一轮循环，让模型看到这条强提醒后收敛
+            continue  # 进入下一轮循环，让模型看到提醒后收尾
 
         # 跨轮思考重复检测：reasoning 不进入消息历史，模型每轮都从同样的工具结果
         # 重新推导，容易反复输出几乎一样的分析却不推进任务。连续复述时先提醒换思路，
@@ -2148,7 +2149,7 @@ async def _execute_node(state: AgentState, tool_result_cache: ToolResultCache) -
 
         # 执行工具：write_todos 即时处理；真实工具按"连续幂等段并行、写操作串行"调度。
         # ToolMessage 先写入 slots 保持与 tool_calls 的顺序对应，全部完成后统一入列。
-        state["_converge_nudges"] = 0  # 有实际工具进展，长文本收敛计数重新开始
+        state["_converge_nudges"] = 0  # 有实际工具进展，复读收敛计数重新开始
         name_to_tool = {t.name: t for t in tools}
         slots: list[ToolMessage | None] = [None] * len(tool_calls)
         real_calls: list[tuple[int, dict]] = []
@@ -2338,9 +2339,16 @@ async def _execute_node(state: AgentState, tool_result_cache: ToolResultCache) -
 
 async def context_node(state: AgentState) -> AgentState:
     """上下文管理节点：超限自动摘要，并把摘要持久化到 session.summary。"""
-    # 出口处广播累计 token 用量
+    # 出口处广播累计 token 用量（含隐式缓存命中量）
     usage = state.get("token_usage")
     if usage:
+        cached = int(usage.get("cache_read_tokens") or 0)
+        total_in = int(usage.get("input_tokens") or 0)
+        logger.info(
+            "[cache] 本轮汇总 命中=%d 输入=%d 命中率=%.1f%% 调用=%d 次",
+            cached, total_in, 100.0 * cached / max(total_in, 1),
+            int(usage.get("llm_calls") or 0),
+        )
         await _emit(state, {"type": "usage", **usage})
     if state.get("error") or state.get("stopped"):
         return state

@@ -24,6 +24,7 @@ from .registry import ensure_spec
 from .runtime_tools import make_runtime_tools
 from .search import make_search_tools
 from .security import make_security_tool
+from .system_info import make_system_tools
 from .terminal import make_process_tool, make_terminal_tool
 from .web import make_web_search_tool
 
@@ -68,6 +69,7 @@ def build_tools(
         *make_db_tools(ctx),
         make_http_tools(ctx),
         make_env_tools(ctx),
+        *make_system_tools(ctx),
         *make_docker_tools(ctx),
         make_checkpoint_tool(ctx),
         make_encoding_tool(ctx),

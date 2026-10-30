@@ -2,7 +2,7 @@
 
 SSE 事件（data 为 JSON；均带 seq 自增序号，可作为 Last-Event-ID）：
   {"type": "run_start", "run_id": "...", "started_at": 1234567890.123}
-  {"type": "status", "status": "executing|stopped|reasoning_too_long|loop_guard|reasoning_repeat_nudge|reasoning_repeat_blocked|duplicate_read_blocked|file_write_nudge|replay_truncated", "detail": "..."}
+  {"type": "status", "status": "executing|stopped|loop_guard|reasoning_repeat_nudge|reasoning_repeat_blocked|duplicate_read_blocked|file_write_nudge|replay_truncated", "detail": "..."}
   {"type": "thinking", "delta": "..."}                     # 模型推理增量
   {"type": "token", "delta": "..."}                         # 流式文本增量
   {"type": "plan", "steps": [...], "todos": [{"content", "status"}]}

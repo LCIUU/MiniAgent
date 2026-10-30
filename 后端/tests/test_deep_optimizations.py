@@ -418,6 +418,129 @@ def test_summary_cutoff_keeps_partial_row_intact():
     assert ctx_mod._summary_cutoff([old, partial], [kept]) == 100.0
 
 
+def test_summary_window_shrinks_by_token_budget(monkeypatch):
+    """压缩后必须明显低于阈值，否则下一轮立刻再压缩（每轮换摘要 = 缓存全灭）。"""
+
+    class FakeLLM:
+        async def ainvoke(self, messages, **kwargs):
+            class R:
+                content = "新摘要"
+
+            return R()
+
+    monkeypatch.setattr(
+        ctx_mod,
+        "get_effective",
+        lambda key, default=None: {
+            "summary_threshold_tokens": 2000,
+            "summary_keep_messages": 30,
+            "summary_keep_ratio": 0.45,
+            "summary_min_keep_messages": 2,
+        }.get(key, default),
+    )
+    msgs = [SystemMessage(content="system")]
+    msgs += [HumanMessage(content="这是一段较长的历史消息内容" * 10) for _ in range(40)]
+    before = ctx_mod.count_tokens_zh_aware(msgs)
+    assert before > 2000
+
+    out = asyncio.run(ctx_mod.maybe_summarize_messages(msgs, FakeLLM()))
+
+    assert len(out) < len(msgs)
+    # 保留窗口按 token 预算收缩：压缩结果要留出余量，不能还贴着阈值
+    assert ctx_mod.count_tokens_zh_aware(out) < 2000 * 0.75
+    # 最后一条（当前任务）必须留在窗口里
+    assert out[-1] is msgs[-1]
+    # 保留段不能以孤立 ToolMessage 开头，也不能从中间拆开工具对
+    assert not isinstance(out[2], ToolMessage)
+
+
+def test_summary_compacts_few_huge_messages(monkeypatch):
+    """条数不足 keep 时也要按 token 预算压缩，否则少量超长消息会撑爆模型窗口。"""
+
+    class FakeLLM:
+        async def ainvoke(self, messages, **kwargs):
+            class R:
+                content = "新摘要"
+
+            return R()
+
+    monkeypatch.setattr(
+        ctx_mod,
+        "get_effective",
+        lambda key, default=None: {
+            "summary_threshold_tokens": 2000,
+            "summary_keep_messages": 30,
+            "summary_keep_ratio": 0.45,
+            "summary_min_keep_messages": 4,
+        }.get(key, default),
+    )
+    msgs = [SystemMessage(content="system")]
+    msgs += [HumanMessage(content="超长工具结果内容" * 300) for _ in range(10)]
+    assert len(msgs) < 30  # 条数远小于 keep
+    assert ctx_mod.count_tokens_zh_aware(msgs) > 4000
+
+    out = asyncio.run(ctx_mod.maybe_summarize_messages(msgs, FakeLLM()))
+
+    assert len(out) < len(msgs)
+    assert out[-1] is msgs[-1]
+    assert ctx_mod.count_tokens_zh_aware(out) < ctx_mod.count_tokens_zh_aware(msgs)
+
+
+def test_accumulate_usage_collects_cache_read():
+    from app.agent import graph as graph_mod
+
+    class Chunk:
+        usage_metadata = {
+            "input_tokens": 1000,
+            "output_tokens": 20,
+            "input_token_details": {"cache_read": 900},
+        }
+
+    class ChunkNoCache:
+        usage_metadata = {"input_tokens": 500, "output_tokens": 10}
+
+    state: dict = {}
+    graph_mod._accumulate_usage(state, Chunk())
+    graph_mod._accumulate_usage(state, ChunkNoCache())
+
+    usage = state["token_usage"]
+    assert usage["input_tokens"] == 1500
+    assert usage["output_tokens"] == 30
+    assert usage["cache_read_tokens"] == 900
+    assert usage["llm_calls"] == 2
+
+
+def test_serialize_run_messages_keeps_internal_nudges():
+    """内部提醒当时就在模型上下文里，必须原样入库，否则下一轮前缀对不上。"""
+    from app.api.agent import _messages_from_run, _serialize_run_messages
+
+    nudge = SystemMessage(content="【系统自动提醒】先读后写", additional_kwargs={"is_nudge": True})
+    messages = [AIMessage(content="完成"), nudge, SystemMessage(content="头部系统提示")]
+
+    items = _serialize_run_messages(messages, set())
+
+    assert [i["role"] for i in items] == ["ai", "system"]
+    assert items[1]["content"] == "【系统自动提醒】先读后写"
+
+    restored = _messages_from_run(items)
+    assert isinstance(restored[1], SystemMessage)
+    assert restored[1].content == nudge.content
+    assert restored[1].additional_kwargs.get("is_nudge") is True
+
+
+def test_history_preserves_request_whitespace():
+    """request_content 原样还原：任何首尾空白差异都会打断缓存前缀。"""
+    from app.api.agent import _history_from_db
+    from app.models import Message
+
+    m = Message(session_id="s", role="user", content="看下这个文件")
+    m.request_content = "看下这个文件\n"
+
+    history = _history_from_db([m])
+
+    assert history[0].content == "看下这个文件\n"
+
+
 def test_summary_message_carries_cutoff(monkeypatch):
     class FakeLLM:
         async def ainvoke(self, messages, **kwargs):
@@ -1142,9 +1265,9 @@ def test_execute_cuts_self_repeating_reasoning():
         m for m in llm.seen[1]
         if isinstance(m, SystemMessage)
         and m.additional_kwargs.get("is_nudge")
-        and "强制收敛" in m.content
+        and "系统自动提醒" in m.content
     ]
-    assert nudges and "不要从头重新分析" in nudges[0].content
+    assert nudges and "不要重复之前的推理" in nudges[0].content
     assert result["messages"][-1].content == "已直接落盘修复。"
 
 
@@ -1831,8 +1954,8 @@ def test_loop_guard_switches_to_summary_instead_of_hard_abort():
     )
 
 
-def test_long_final_answer_accepted_after_one_nudge():
-    """无工具调用的长回答不应被推理护栏反复丢弃：第二次直接按最终回答收尾。"""
+def test_long_final_answer_accepted_without_length_nudge():
+    """长回答不触发任何“分析过长”提醒，也不被丢弃，直接按最终回答收尾。"""
 
     class Chunk:
         def __init__(self, content=""):
@@ -1857,13 +1980,19 @@ def test_long_final_answer_accepted_after_one_nudge():
         def with_retry(self, **kw):
             return self
 
-    result, events = _run_execute(LongAnswerLLM(), "long_answer")
+    llm = LongAnswerLLM()
+    result, events = _run_execute(llm, "long_answer")
 
     answer = "分析" * 1500
     assert result["messages"][-1].content == answer
+    assert llm.calls == 1
     blocked = [e for e in events if e.get("type") == "status" and e.get("status") == "reasoning_loop_blocked"]
-    assert len(blocked) == 2  # 第一次提醒，第二次直接收尾
-    assert any("按最终回答收尾" in e.get("detail", "") for e in blocked)
+    assert blocked == []
+    nudges = [
+        m for m in result["messages"]
+        if isinstance(m, SystemMessage) and m.additional_kwargs.get("is_nudge")
+    ]
+    assert nudges == []
 
 
 def test_summary_mode_never_executes_tool_calls():

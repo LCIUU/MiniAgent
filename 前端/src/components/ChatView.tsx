@@ -4,6 +4,7 @@ import type { AttachmentMeta, StreamMessage } from "../types";
 import { ApprovalCard, QuestionCard } from "./ToolCard";
 import { Markdown } from "./Markdown";
 import { ProcessTimeline } from "./ProcessTimeline";
+import { Loading } from "./Loading";
 import { answerOf, hasLiveItem } from "../utils/timeline";
 import { BASE } from "../api/client";
 import { copyText } from "../utils/clipboard";
@@ -152,7 +153,7 @@ export const MessageView = memo(function MessageView({
     return (
       <div className="msg msg-assistant">
         <div className="status-line">
-          <span className="spinner" />
+          <Loading />
           思考中…
         </div>
       </div>
@@ -167,7 +168,7 @@ export const MessageView = memo(function MessageView({
           进度提示应跟在内容末尾，而不是插在过程流和正文之间 */}
       {streaming && (msg.progress || !hasLiveItem(msg)) && (
         <div className="status-line tail">
-          <span className="spinner" />
+          <Loading />
           {msg.progress || "智能体正在规划"}
         </div>
       )}
