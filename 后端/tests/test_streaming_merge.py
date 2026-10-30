@@ -1,5 +1,6 @@
 """验证流式工具调用参数聚合（模拟 OpenAI 增量 chunk）。"""
 import asyncio
+import json
 import sys
 import tempfile
 from pathlib import Path
@@ -21,12 +22,14 @@ class MockLLM:
             yield AIMessageChunk(content="已创建 demo.txt")
             return
 
-        # 模拟 OpenAI 流式：分多次增量输出 tool call 参数（JSON 字符串片段）
+        # 模拟 OpenAI 流式：分多次增量输出 tool call 参数（JSON 字符串片段）。
+        # 参数超过 1KB 才会上报进度事件（小调用不做进度反馈）。
+        payload = json.dumps({"path": "demo.txt", "content": "x" * 1200})
         yield AIMessageChunk(content="", tool_call_chunks=[
-            {"name": "write_file", "args": '{"path": "dem', "id": "call_1", "index": 0},
+            {"name": "write_file", "args": payload[:20], "id": "call_1", "index": 0},
         ])
         yield AIMessageChunk(content="", tool_call_chunks=[
-            {"name": None, "args": 'o.txt", "content": "hi"}', "id": "call_1", "index": 0},
+            {"name": None, "args": payload[20:], "id": "call_1", "index": 0},
         ])
         yield AIMessageChunk(content="", tool_call_chunks=[
             {"name": None, "args": "", "id": "call_1", "index": 0},
@@ -42,10 +45,10 @@ class MockLLM:
 
 
 async def main():
+    import app.agent.graph as g
     from app.agent.graph import execute_node
     from app.tools.context import ApprovalManager, ToolContext
     from app.tools.files import make_file_tools
-    import app.agent.graph as g
 
     original = g.init_chat_models
     g.init_chat_models = lambda **kw: MockLLM()
@@ -74,6 +77,14 @@ async def main():
         tool_starts = [e for e in events if e["type"] == "tool_start"]
         for ts in tool_starts:
             print("tool_start args:", ts.get("args"))
+        # 长参数生成期间必须上报 progress，否则前端会长时间毫无反馈
+        progresses = [e for e in events if e["type"] == "progress"]
+        print("progress events:", [
+            (p.get("tool"), p.get("chars"), p.get("detail")) for p in progresses
+        ])
+        assert progresses, "工具参数生成期间没有发送 progress 事件"
+        assert progresses[0]["tool"] == "write_file"
+        assert progresses[0]["chars"] > 0
         if not demo.exists():
             print("!!! 工具参数未正确聚合，write_file 未执行或参数为空")
             return

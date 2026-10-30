@@ -3,6 +3,7 @@ import { useStore } from "../useAgent";
 import { getState, setState } from "../store";
 import { api } from "../api/client";
 import type { AttachmentMeta, TimelineItem } from "../types";
+import { Loading } from "./Loading";
 
 /** 毫秒格式化为 mm:ss / h:mm:ss。 */
 function formatMs(ms: number): string {
@@ -662,7 +663,7 @@ export function InputBox({
                 <img src={im.previewUrl} alt="粘贴图片预览" />
                 {im.status === "uploading" && (
                   <span className="paste-mask">
-                    <span className="spinner" />
+                    <Loading />
                     上传中
                   </span>
                 )}

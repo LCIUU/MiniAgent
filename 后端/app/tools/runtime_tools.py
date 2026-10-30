@@ -311,18 +311,23 @@ def make_runtime_tools(ctx: ToolContext):
     @tool(parse_docstring=True)
     async def run_code(language: str, code: str, timeout: int = 30) -> str:
         """
-        直接运行一小段代码并返回输出（自动用临时文件，避免 shell 引号转义问题）
+        直接运行一小段代码并返回输出（自动使用临时文件，避免 shell 引号转义问题）
 
-        适合验证语法、跑几行数据处理、试验正则等；不要用它替代项目本身的测试。
-        临时文件在运行结束后自动删除，代码若在运行时创建的文件会保留。
+        适用：验证语法、试验正则/数据处理逻辑、快速验证一个想法。不适合替代项目测试，
+        也不适合运行长时间服务（用 terminal 后台模式）；代码若依赖项目依赖，需确保对应
+        Python/Node 环境已安装。
+
+        支持 python、node、bash；代码写入 .agent_logs 下的临时文件后执行，结束后自动删除
+        临时文件，但代码运行期间创建的其他文件会保留。超时 1-120 秒，默认 30 秒；
+        输出过长时保留头尾。Python 优先使用工作区 .venv 中的解释器。
 
         Args:
-            language: 语言，支持 python / node / bash
-            code: 要执行的完整代码
-            timeout: 可选，超时秒数（1-120，默认 30）
+            language: 语言，支持 python / py、node / javascript / js、bash / sh。
+            code: 要执行的完整代码，会原样写入临时文件。
+            timeout: 超时秒数，默认 30，范围 1-120；超时后终止进程树。
 
         Returns:
-            退出码、耗时与合并后的标准输出/错误输出
+            退出码、耗时、语言与合并后的标准输出/错误输出；超时或被停止时返回说明。
         """
         ctx.check_stopped()
         if not code.strip():
@@ -382,18 +387,24 @@ def make_runtime_tools(ctx: ToolContext):
         timeout: int = 300,
     ) -> str:
         """
-        运行项目测试，可只跑指定文件/目录或按关键字过滤
+        运行项目测试，可只跑指定文件/目录或按关键字过滤（改完代码后的首选验证方式）
 
-        比 run_checks(kind="test") 更精准：改完一个文件后可只跑相关测试，快速验证。
+        适用：修改某个模块后只跑相关测试，比 run_checks(kind="test") 更精准。自动识别项目类型
+        并选择测试框架：Python 用 pytest -q（支持 -x 与 -k），Node 优先 vitest/jest（否则用
+        包管理器 test 脚本），Go 用 go test，Rust 用 cargo test。
+
+        target 必须是工作区内已存在的测试文件/目录；keyword 映射到 pytest -k / jest -t /
+        go -run / cargo test 名称过滤。超时 10-300 秒，默认 300；Node 项目缺少 node_modules
+        时会提示先安装依赖。输出过长时保留头尾，失败时标注【测试失败】。
 
         Args:
-            target: 可选，测试文件/目录（相对工作区），如 tests/test_api.py 或 src/foo.test.ts
-            keyword: 可选，只跑名称匹配该关键字的用例（pytest -k / jest -t / go -run）
-            fail_fast: 可选，第一个失败就停止（pytest -x），默认 False
-            timeout: 可选，超时秒数（10-300，默认 300；需小于工具总超时 330s）
+            target: 可选，测试文件或目录，相对当前工作区，例如 tests/test_api.py。
+            keyword: 可选，按用例名称过滤，例如 "login"。
+            fail_fast: 第一个失败就停止（pytest -x / jest --bail / go -failfast），默认 False。
+            timeout: 超时秒数，默认 300，范围 10-300。
 
         Returns:
-            退出码、耗时与测试输出
+            测试退出码、耗时、实际命令与输出；通过时标注【测试通过】。
         """
         ctx.check_stopped()
         # 必须小于 @tool_spec(timeout=330)：否则外层先超时取消，子进程回收依赖 _exec 的兜底
@@ -504,17 +515,21 @@ def make_runtime_tools(ctx: ToolContext):
     @tool(parse_docstring=True)
     async def wait_for_server(url: str = "http://127.0.0.1:8000", timeout: int = 60) -> str:
         """
-        轮询本地服务直到可访问或超时
+        轮询本地服务直到可访问或超时（启动 dev server 后等待就绪）
 
-        启动 dev server 后用它等待就绪，替代 sleep 后盲目访问；
-        只允许 localhost / 127.0.0.1 / ::1，不会访问外部地址。
+        适用：后台启动开发服务器/后端后，等待端口真正可访问再进行下一步，替代"sleep 后
+        盲目访问"。只允许 localhost、127.0.0.1、::1 等本机地址，不会访问外部 URL；
+        每 0.5 秒重试一次，返回首次成功的状态码与等待耗时。
+
+        超时后返回最后一次连接错误，并提示用 list_ports / port_info 检查端口占用。
+        服务启动失败（如端口被占用）时不会自行修复，需要查看 process 日志。
 
         Args:
-            url: 本地服务地址，默认 http://127.0.0.1:8000
-            timeout: 可选，最长等待秒数（1-180，默认 60）
+            url: 本地服务地址，默认 http://127.0.0.1:8000；必须带 http/https 协议。
+            timeout: 最长等待秒数，默认 60，范围 1-180。
 
         Returns:
-            服务就绪时返回状态码与耗时；超时返回最后一次错误
+            服务就绪时返回状态码与耗时；超时返回最后错误与排查建议。
         """
         ctx.check_stopped()
         parsed = urlparse(url.strip())
@@ -556,15 +571,19 @@ def make_runtime_tools(ctx: ToolContext):
     @tool(parse_docstring=True)
     async def list_ports(port: int = 0) -> str:
         """
-        列出本机正在监听的 TCP 端口及对应进程
+        列出本机正在监听的 TCP 端口及对应进程（只读）
 
-        排查端口占用（EADDRINUSE）、确认 dev server 是否真的起来时使用。
+        适用：排查 EADDRINUSE、确认 dev server 是否真的启动、找出占用某端口的进程。
+        输出包含监听地址、协议、PID 和进程名，按端口号排序，最多显示 200 条。
+
+        只读，不会结束任何进程。确定占用者后用 port_info 查看详情；若确认是 Agent 启动的
+        后台服务，用 process(action="stop") 停止；非 Agent 进程需先征得用户同意。
 
         Args:
-            port: 可选，只看指定端口；0 表示列出全部监听端口
+            port: 只看指定端口；默认 0 表示列出所有监听端口。
 
         Returns:
-            端口、监听地址、PID、进程名列表
+            监听端口清单；未找到或系统缺少 netstat/ss/lsof 时返回提示。
         """
         ctx.check_stopped()
 
@@ -595,14 +614,18 @@ def make_runtime_tools(ctx: ToolContext):
         """
         查看指定端口的占用详情（只读，不会结束任何进程）
 
-        返回监听地址、PID、进程名、可执行文件、命令行与来源；判断端口被谁占用、
-        是否是 Agent 启动的后台服务时使用。非 Agent 启动的进程一律不得终止。
+        适用：确认端口被哪个进程占用、进程是否由本 Agent 后台启动、如何安全释放端口。
+        返回监听地址、PID、进程名、可执行文件、命令行、启动时间与父进程 PID，并标注
+        "由 Agent 后台启动"或"非本工作区 Agent 启动的进程（禁止终止）"。
+
+        只读操作；需要停止时，仅对 Agent 启动的后台进程使用 process(action="stop")。
+        禁止用 taskkill /F /IM 等方式杀掉整族进程。
 
         Args:
-            port: 要查看的端口号（1-65535）
+            port: 要查看的端口号，范围 1-65535。
 
         Returns:
-            端口占用详情；未被监听时明确说明
+            端口占用详情；未被监听时返回提示与 wait_for_server 建议。
         """
         ctx.check_stopped()
         try:
@@ -670,14 +693,18 @@ def make_runtime_tools(ctx: ToolContext):
         """
         只读检查依赖中的已知安全漏洞（不修改 lock 文件）
 
-        Node 用 npm/pnpm audit，Python 用 pip-audit（需已安装），
-        Go 用 govulncheck，Rust 用 cargo audit。
+        适用：安全审查、依赖升级前评估风险。自动识别项目类型并调用对应审计工具：
+        Node 用 npm/pnpm audit，Python 用 pip-audit（需已安装），Go 用 govulncheck，
+        Rust 用 cargo audit。不会安装依赖、不会修改 lock 文件。
+
+        返回漏洞总数、严重级别与受影响包列表（最多显示前 20-25 项）；缺少审计工具时
+        给出安装命令。超时 30-180 秒，默认 180 秒。
 
         Args:
-            timeout: 可选，超时秒数（30-180，默认 180；需小于工具总超时 200s）
+            timeout: 超时秒数，默认 180，范围 30-180。
 
         Returns:
-            漏洞数量、严重级别与受影响包列表；缺少检查工具时给出安装提示
+            漏洞摘要与受影响包；未发现漏洞或缺少工具时返回提示。
         """
         ctx.check_stopped()
         timeout = max(30, min(int(timeout), 180))

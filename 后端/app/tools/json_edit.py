@@ -126,18 +126,24 @@ def make_json_edit_tool(ctx: ToolContext):
         action: str = "get",
     ) -> str:
         """
-        按 JSON Pointer 读取或修改 JSON 文件（保留缩进与中文）
+        按 JSON Pointer 精确读取或修改 JSON 文件（保留缩进、中文与末尾换行）
 
-        比整文件重写更安全：只改动目标节点，其余键顺序和格式保持不变。
+        适用：修改 package.json、tsconfig.json、settings.json 等结构化配置的单个字段，
+        比整份 write_file 更安全：只改动目标节点，其余键顺序和格式保持不变。
+
+        pointer 使用 JSON Pointer 语法：根节点留空，子节点写 /a/b/0（~1 表示 /，~0 表示 ~）。
+        set 时 value 会优先按 JSON 解析（如 42、true、[1,2]、{"a":1}），解析失败则按纯字符串写入。
+        不会自动创建中间节点，父节点不存在时先逐层 set。含 // 或 /* 注释的 JSONC 文件无法安全
+        重排，会提示改用 edit_file。写入前自动备份并推送 diff。
 
         Args:
-            path: JSON 文件路径，相对工作区
-            pointer: JSON Pointer，根节点留空；例如 /scripts/build/command 或 /dependencies/0
-            value: 可选，set 时的新值；优先按 JSON 解析（如 42 / true / [1,2] / {"a":1}），解析失败则按字符串写入
-            action: 操作类型：get（默认，只读）/ set / delete
+            path: JSON 文件路径，相对当前工作区，必须已存在且是合法 JSON。
+            pointer: JSON Pointer，根节点留空；例如 /scripts/build/command 或 /dependencies/0。
+            value: set 时的新值；按 JSON 解析失败时作为纯字符串写入。
+            action: 操作类型：get（默认，只读）/ set / delete；删除根节点会被拒绝。
 
         Returns:
-            节点当前值，或修改结果与增删摘要
+            当前节点值，或修改结果、当前值与增删摘要；失败时返回原因。
         """
         ctx.check_stopped()
         action = action.lower().strip()

@@ -1664,17 +1664,46 @@ body {
   margin-bottom: 12px;
 }
 
-.spinner {
-  width: 14px;
-  height: 14px;
-  border: 2px solid var(--ds-border-strong);
-  border-top-color: var(--ds-blue);
-  border-radius: 50%;
-  animation: spin 0.8s linear infinite;
+/* 跟在正文末尾的状态行：与上文留一点间距，不再向下撑开 */
+.status-line.tail {
+  margin: 10px 0 0;
 }
-@keyframes spin {
+
+/* 运行状态指示：心电图折线扫描（Uiverse.io by milley69） */
+.loader-line {
+  display: inline-flex;
+  flex: none;
+  align-items: center;
+  justify-content: center;
+}
+.loader-line svg {
+  display: block;
+  width: 22px;
+  height: 16px;
+  overflow: visible;
+}
+.loader-line svg polyline {
+  fill: none;
+  stroke-width: 3;
+  stroke-linecap: round;
+  stroke-linejoin: round;
+}
+.loader-line svg polyline.back {
+  stroke: #d92d2033;
+}
+.loader-line svg polyline.front {
+  stroke: #d92d20;
+  stroke-dasharray: 48, 144;
+  stroke-dashoffset: 192;
+  animation: loader-dash 1.4s linear infinite;
+}
+@keyframes loader-dash {
+  72.5% {
+    opacity: 0;
+  }
+
   to {
-    transform: rotate(360deg);
+    stroke-dashoffset: 0;
   }
 }
 
@@ -1750,104 +1779,231 @@ body {
 }
 
 /* ============================================================
-   结构化提问卡片（用户拍板/删除确认）
+   结构化提问卡片（用户拍板 / 方案选择）
    ============================================================ */
 .question-card {
   position: relative;
-  border: 1px solid #cdd8ff;
+  margin: 14px 0;
+  padding: 16px;
+  border: 1px solid #e2e7ff;
   border-radius: var(--r-lg);
-  padding: 14px 16px;
-  margin: 12px 0;
-  background: var(--ds-blue-soft);
+  background:
+    radial-gradient(120% 150% at 0% 0%, rgba(123, 92, 255, 0.07) 0%, rgba(123, 92, 255, 0) 55%),
+    #fff;
+  box-shadow: 0 20px 44px -34px rgba(45, 62, 128, 0.55);
 }
-.question-card .title {
+.question-card .q-head {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+  margin-bottom: 10px;
+}
+.question-card .q-icon {
+  flex: none;
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  width: 22px;
+  height: 22px;
+  border-radius: 7px;
+  background: var(--ds-blue-soft);
   color: var(--ds-blue);
-  font-size: 13px;
+}
+.question-card .q-icon svg {
+  width: 13px;
+  height: 13px;
+}
+.question-card .q-title {
+  color: var(--ds-blue);
+  font-size: 12.5px;
   font-weight: 600;
-  margin-bottom: 6px;
+  letter-spacing: 0.02em;
+}
+.question-card .q-tag {
+  padding: 2px 8px;
+  border-radius: 999px;
+  background: var(--ds-blue-soft);
+  color: var(--ds-blue);
+  font-size: 10.5px;
+  font-weight: 600;
+  letter-spacing: 0.04em;
 }
 .question-card .q-text {
   color: var(--ds-text);
-  font-size: 13.5px;
-  line-height: 1.7;
+  font-size: 14px;
+  line-height: 1.75;
   white-space: pre-wrap;
   word-break: break-word;
 }
 .question-card .q-options {
   display: flex;
   flex-direction: column;
-  gap: 6px;
-  margin-top: 10px;
+  gap: 8px;
+  margin-top: 12px;
 }
 .question-card .q-option {
   display: flex;
   align-items: center;
-  gap: 8px;
-  padding: 7px 10px;
-  border: 1px solid var(--ds-border-strong);
-  border-radius: var(--r-sm);
+  gap: 10px;
+  width: 100%;
+  padding: 8px 12px 8px 8px;
+  border: 1px solid #e6e9f4;
+  border-radius: 11px;
   background: #fff;
   color: var(--ds-text);
-  font-size: 12.5px;
+  font-family: inherit;
+  font-size: 13px;
+  text-align: left;
   cursor: pointer;
-  transition: all 0.15s var(--spring);
+  transition:
+    border-color 0.15s var(--spring),
+    background 0.15s var(--spring),
+    box-shadow 0.15s var(--spring);
 }
-.question-card .q-option:hover {
-  background: var(--ds-bg-hover);
+.question-card .q-option:hover:not(:disabled) {
+  border-color: var(--ds-blue);
+  background: #f8faff;
+  box-shadow: 0 12px 24px -20px rgba(77, 107, 254, 0.95);
+}
+.question-card .q-option:focus-visible {
+  outline: none;
+  border-color: var(--ds-blue);
+  box-shadow: 0 0 0 3px var(--ds-blue-ring);
+}
+.question-card .q-option:disabled {
+  cursor: default;
+  opacity: 0.6;
 }
 .question-card .q-option.checked {
   border-color: var(--ds-blue);
-  background: #fff;
-  box-shadow: 0 0 0 3px var(--ds-blue-ring);
+  background: #f5f8ff;
 }
-.question-card .q-option input {
-  accent-color: var(--ds-blue);
+.question-card .q-key {
+  flex: none;
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  width: 24px;
+  height: 24px;
+  border-radius: 7px;
+  background: var(--ds-blue-soft);
+  color: var(--ds-blue);
+  font-family: var(--mono);
+  font-size: 11.5px;
+  font-weight: 700;
+  transition:
+    background 0.15s var(--spring),
+    color 0.15s var(--spring);
+}
+.question-card .q-option:hover:not(:disabled) .q-key,
+.question-card .q-option.checked .q-key {
+  background: var(--ds-blue);
+  color: #fff;
+}
+.question-card .q-label {
+  flex: 1;
+  min-width: 0;
+  line-height: 1.55;
+  word-break: break-word;
+}
+.question-card.sent {
+  padding: 12px 16px;
+  border-color: #d8ecdf;
+  background: #fbfefc;
+  box-shadow: 0 14px 30px -30px rgba(22, 101, 52, 0.45);
+}
+.question-card .q-sent-icon {
+  flex: none;
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  width: 20px;
+  height: 20px;
+  border-radius: 50%;
+  background: var(--ds-green-bg);
+  color: var(--ds-green);
+}
+.question-card .q-sent-icon svg {
+  width: 11px;
+  height: 11px;
+}
+.question-card .q-answer {
+  color: var(--ds-text);
+  font-size: 13.5px;
+  line-height: 1.7;
+  white-space: pre-wrap;
+  word-break: break-word;
 }
 .question-card .q-free {
+  margin-top: 12px;
+  padding-top: 12px;
+  border-top: 1px dashed #e7eaf6;
+}
+.question-card .q-free.solo {
+  margin-top: 12px;
+  padding-top: 0;
+  border-top: none;
+}
+.question-card .q-free-label {
+  margin-bottom: 7px;
+  color: var(--text-40);
+  font-size: 11.5px;
+  letter-spacing: 0.03em;
+}
+.question-card .q-free-row {
   display: flex;
-  gap: 8px;
-  margin-top: 10px;
   align-items: flex-end;
+  gap: 8px;
 }
 .question-card .q-free textarea {
   flex: 1;
-  resize: none;
+  min-height: 40px;
+  max-height: 132px;
+  resize: vertical;
   border: 1px solid var(--ds-border-strong);
-  border-radius: var(--r-sm);
-  padding: 8px 10px;
+  border-radius: 10px;
+  padding: 9px 12px;
   font-family: inherit;
   font-size: 13px;
+  line-height: 1.6;
   color: var(--ds-text);
   background: #fff;
   outline: none;
+  transition:
+    border-color 0.15s var(--spring),
+    box-shadow 0.15s var(--spring);
 }
 .question-card .q-free textarea:focus {
   border-color: var(--ds-blue);
   box-shadow: 0 0 0 3px var(--ds-blue-ring);
 }
-.question-card .actions {
-  display: flex;
-  flex-wrap: wrap;
-  gap: 8px;
-  margin-top: 10px;
+.question-card .q-free textarea:disabled {
+  background: #fafbfe;
+  color: var(--text-40);
 }
-.question-card button {
-  border: 1px solid var(--ds-border-strong);
-  background: #fff;
-  color: var(--ds-text);
-  border-radius: var(--r-sm);
-  padding: 6px 18px;
+.question-card .q-submit {
+  flex: none;
+  border: none;
+  border-radius: 10px;
+  padding: 10px 20px;
+  background: linear-gradient(135deg, #4d6bfe 0%, #7b5cff 100%);
+  color: #fff;
+  font-family: inherit;
   font-size: 12.5px;
+  font-weight: 600;
   cursor: pointer;
-  transition: all 0.15s var(--spring);
+  box-shadow: 0 10px 20px -12px rgba(77, 107, 254, 0.85);
+  transition:
+    filter 0.15s var(--spring),
+    opacity 0.15s var(--spring);
 }
-.question-card button:hover:not(:disabled) {
-  border-color: var(--ds-blue);
-  color: var(--ds-blue);
+.question-card .q-submit:hover:not(:disabled) {
+  filter: brightness(1.08);
 }
-.question-card button:disabled {
-  opacity: 0.5;
+.question-card .q-submit:disabled {
+  opacity: 0.45;
   cursor: default;
+  box-shadow: none;
 }
 
 /* ============================================================
@@ -2457,18 +2613,9 @@ body {
   color: #b91c1c;
   background: #fff;
 }
-.paste-item .spinner {
-  width: 14px;
-  height: 14px;
-  border: 2px solid var(--ds-border-strong);
-  border-top-color: var(--ds-blue, #2563eb);
-  border-radius: 50%;
-  animation: paste-spin 0.8s linear infinite;
-}
-@keyframes paste-spin {
-  to {
-    transform: rotate(360deg);
-  }
+.paste-item .loader-line svg {
+  width: 16px;
+  height: 12px;
 }
 
 /* 消息气泡内附件展示 */
@@ -3280,6 +3427,10 @@ body {
   font-size: 11px;
   color: var(--ds-text-3);
   flex-shrink: 0;
+  /* 计时文字宽度会随位数变化，定宽+右对齐避免每分钟推挤右侧徽章 */
+  min-width: 56px;
+  text-align: right;
+  font-variant-numeric: tabular-nums;
 }
 .pflow-caret {
   flex-shrink: 0;

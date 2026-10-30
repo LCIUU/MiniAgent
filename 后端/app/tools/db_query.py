@@ -136,10 +136,15 @@ def make_db_tools(ctx: ToolContext):
     @tool(parse_docstring=True)
     async def db_schema() -> str:
         """
-        查看当前项目数据库的表结构概览
+        查看当前项目数据库的表结构概览（只读）
+
+        适用：需要了解有哪些表、确认表名拼写时。连接信息从环境变量 DATABASE_URL /
+        DB_URL / DB_DSN 或工作区 .env 文件读取；只支持 PostgreSQL、SQLite、MySQL。
+        PostgreSQL 查询 public schema 的表名，SQLite 用 .tables，MySQL 用 SHOW TABLES。
+        不会修改数据库；未配置连接或缺少命令行客户端时返回提示。
 
         Returns:
-            数据库类型与表清单
+            数据库类型与表清单；连接失败时返回错误原因。
         """
         ctx.check_stopped()
         dsn = _get_dsn(ctx.workspace)
@@ -164,13 +169,20 @@ def make_db_tools(ctx: ToolContext):
     @tool(parse_docstring=True)
     async def db_query(sql: str) -> str:
         """
-        执行只读 SQL 查询（仅允许 SELECT / EXPLAIN / SHOW / DESCRIBE）
+        执行只读 SQL 查询（仅允许 SELECT / EXPLAIN / SHOW / DESCRIBE / WITH）
+
+        适用：查看数据、验证迁移结果、排查数据问题。连接信息从 DATABASE_URL / DB_URL /
+        DB_DSN 或 .env 读取，支持 PostgreSQL、SQLite、MySQL。查询前会做关键字检查，
+        包含 INSERT/UPDATE/DELETE/DROP/ALTER/CREATE/TRUNCATE 等写操作会被拒绝，
+        且语句必须以只读关键字开头。
+
+        单次查询超时 30 秒，输出过长时保留头尾；不会自动加 LIMIT，查询大表前请自行限制行数。
 
         Args:
-            sql: SQL 查询语句，只允许只读操作
+            sql: 只读 SQL 语句，必须以 SELECT / EXPLAIN / SHOW / DESCRIBE / WITH 开头。
 
         Returns:
-            查询结果
+            查询结果；被安全规则拦截、连接缺失或执行失败时返回原因。
         """
         ctx.check_stopped()
         if not sql.strip():

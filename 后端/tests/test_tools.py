@@ -56,6 +56,26 @@ async def main():
     r3b = await rf.ainvoke({"path": "hello.py"})
     print("edit applied:", "print(100)" in r3b)
 
+    # 模型从 read_file 复制内容时可能带上 "  1 | " 行号前缀，edit_file 应容错
+    r3c = await ef.ainvoke({
+        "path": "hello.py",
+        "old_string": "    1 | print(100)",
+        "new_string": "print(200)",
+    })
+    print("edit with line number:", r3c[:60])
+    assert "编辑成功" in r3c and "行号前缀已自动忽略" in r3c, r3c
+    r3d = await rf.ainvoke({"path": "hello.py"})
+    assert "print(200)" in r3d, r3d
+
+    # write_file 回执：新建/同内容/有差异三种状态要说清楚，并引导局部编辑
+    fb1 = await wf.ainvoke({"path": "feedback.txt", "content": "a\nb\n"})
+    assert "已创建文件" in fb1 and "edit_file" in fb1, fb1
+    fb2 = await wf.ainvoke({"path": "feedback.txt", "content": "a\nb\n"})
+    assert "完全一致" in fb2, fb2
+    fb3 = await wf.ainvoke({"path": "feedback.txt", "content": "a\nc\n"})
+    assert "已覆盖文件" in fb3 and "+1/-1" in fb3 and "edit_file" in fb3, fb3
+    print("write feedback:", fb1[:30], "|", fb2[:30], "|", fb3[:40])
+
     # 终端工具
     t = make_terminal_tool(ctx)
     r4 = await t.ainvoke({"command": "python -c \"print(42)\"", "timeout": 30})

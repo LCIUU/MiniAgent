@@ -62,13 +62,21 @@ def make_format_tool(ctx: ToolContext):
     @tool(parse_docstring=True)
     async def format_code(path: str = "") -> str:
         """
-        用项目现有的格式化工具整理代码
+        用项目现有的格式化工具整理代码（按语言自动选择 ruff/black/prettier/gofmt/cargo fmt）
+
+        适用：完成一批修改后统一格式，或格式化单个文件。按目标文件后缀或项目配置文件
+        自动选择工具：Python 用 ruff format（缺失时 black），Go 用 gofmt，Rust 用 cargo fmt
+        或 rustfmt，前端/JSON/CSS/Markdown 用项目本地 prettier（缺失时 npx --no-install）。
+        不会联网安装工具；prettier 会跳过锁文件。Python 工具来自当前后端进程的 Python 环境。
+
+        path 留空会格式化整个项目，可能较慢；建议先只格式化本次改动的文件或目录。
+        格式化会直接改写文件，属于中等风险操作。
 
         Args:
-            path: 可选，只格式化工作区内的某个文件/目录；不传则格式化整个项目（可能较慢）
+            path: 可选，只格式化工作区内的某个文件或目录；留空表示整个工作区。
 
         Returns:
-            格式化命令的输出与结果
+            所用命令、退出码与命令输出；找不到合适工具时返回安装建议。
         """
         ctx.check_stopped()
         try:

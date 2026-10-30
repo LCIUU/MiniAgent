@@ -8,6 +8,7 @@
 import { useEffect, memo, useRef, useState } from "react";
 import { Markdown } from "./Markdown";
 import type { StreamMessage, TimelineItem } from "../types";
+import { splitTimeline } from "../utils/timeline";
 import thinkIconUrl from "../assets/Think-icon.svg";
 import toolIconUrl from "../assets/Tool-icon.svg";
 import terminalIconUrl from "../assets/terminal-icon.svg";
@@ -25,17 +26,40 @@ function fmtDuration(ms?: number): string {
   return ms < 1000 ? `${Math.round(ms)} ms` : `${(ms / 1000).toFixed(2)} s`;
 }
 
-/** 供右侧工具面板复用的行摘要工具 */
-export function briefDuration(ms?: number): string {
-  return fmtDuration(ms);
+/** 实时耗时文案：1 秒内毫秒位逐帧变化太吵，按 0.5 秒步进；满 1 秒后逐帧平滑滚动。 */
+function liveDurationText(start: number, now: number): string {
+  const elapsed = now - start;
+  return elapsed < 1000
+    ? fmtDuration(Math.floor(elapsed / 500) * 500) // 0 ms / 500 ms
+    : fmtDuration(elapsed);
 }
 
-export function briefText(s: string, max: number): string {
-  return truncate1(s, max);
-}
-
-export function toolArgBrief(args: Record<string, unknown>): string {
-  return argBrief(args);
+/** 实时耗时：计时器独立于此组件，按帧直接写 textContent，
+ *  不用 state 是为了避免每次 tick 重渲染整行（含展开的 Markdown 正文）。 */
+function LiveDuration({ start }: { start: number }) {
+  const ref = useRef<HTMLSpanElement>(null);
+  useEffect(() => {
+    let raf = 0;
+    let last = "";
+    const tick = () => {
+      const el = ref.current;
+      if (el) {
+        const text = liveDurationText(start, Date.now());
+        if (text !== last) {
+          el.textContent = text;
+          last = text;
+        }
+      }
+      raf = requestAnimationFrame(tick);
+    };
+    raf = requestAnimationFrame(tick);
+    return () => cancelAnimationFrame(raf);
+  }, [start]);
+  return (
+    <span className="pflow-dur" ref={ref}>
+      {liveDurationText(start, Date.now())}
+    </span>
+  );
 }
 
 function truncate1(s: string, max: number): string {
@@ -48,78 +72,6 @@ function truncateMultiline(s: string, max: number): string {
   return s.length > max ? `${s.slice(0, max)}…` : s;
 }
 
-/** 判断一段文本是否为"噪音碎片"（仅标点/空白，无实质内容）。
- * 模型在 reasoning 模式下 content chunk 偶尔只有 "." 这样的标点，
- * 被作为独立 token emit 后会变成孤立的 text 条目，渲染出来就是一个孤零零的标点。 */
-function isNoiseText(s: string): boolean {
-  // 去除空白后，如果只剩标点符号（不含字母/数字/中文字符），视为噪音
-  const stripped = s.replace(/\s+/g, "");
-  if (!stripped) return true;
-  // 只要包含一个字母、数字、中文字符或 emoji，就不是噪音
-  return !/[A-Za-z0-9\u4e00-\u9fff\u3040-\u30ff]/.test(stripped);
-}
-
-/**
- * 切分时间轴：最终回答 = 最后一个 text 条目，且它必须是 timeline 的最后一项。
- * 如果最后一个 text 后面还有 thinking/tool/plan 等条目，说明该 text 只是阶段性正文，
- * 保留在内联流中，不单独提取为最终回答——否则新思考会被"挤到"已输出文本上方。
- * 同时过滤掉噪音 text 条目（仅标点/空白的碎片）。
- * answerOf 与 ProcessTimeline 共用此函数，保证「底部最终回答」与「内联过程流」严格互补。
- */
-function splitTimeline(tl: TimelineItem[]): { items: TimelineItem[]; answer: string } {
-  // 尾部可能有收尾压缩（plan/compress）：跳过它们，找到真正的末尾内容条目，
-  // 否则"回答后压缩"会把最终回答误判为阶段正文
-  let lastIdx = tl.length - 1;
-  while (lastIdx >= 0 && (tl[lastIdx].kind === "plan" || tl[lastIdx].kind === "compress")) {
-    lastIdx--;
-  }
-  if (lastIdx < 0) {
-    return {
-      items: tl.filter((it) => !(it.kind === "text" && isNoiseText(it.text))),
-      answer: "",
-    };
-  }
-  const last = tl[lastIdx];
-  if (last.kind !== "text") {
-    // 最后内容不是 text：过滤掉中间的噪音 text 条目
-    return {
-      items: tl.filter((it) => !(it.kind === "text" && isNoiseText(it.text))),
-      answer: "",
-    };
-  }
-  // 末尾（跳过尾部压缩后）是 text：提取为最终回答，同时过滤掉中间的噪音 text 条目
-  const answer = isNoiseText(last.text) ? "" : last.text;
-  return {
-    items: tl
-      .filter((_, i) => i !== lastIdx)
-      .filter((it) => !(it.kind === "text" && isNoiseText(it.text))),
-    answer,
-  };
-}
-
-/** 提取最终回答：有 timeline 时为最后一个 text 条目；时间轴末尾不是正文
- *  （中断/停止）时回退到 msg.content，否则错误提示或最终回答会整体丢失。 */
-export function answerOf(msg: StreamMessage): string {
-  const tl = msg.timeline;
-  if (tl && tl.length > 0) {
-    const { answer } = splitTimeline(tl);
-    if (answer) return answer;
-    // 流式期间 content 与内联阶段正文重叠，不能回退（会重复渲染）
-    if (msg.status === "streaming") return "";
-    // 中断提示追加在正文之后：去掉与内联末段正文重复的前缀，只展示新增部分
-    let fallback = msg.content;
-    for (let i = tl.length - 1; i >= 0; i--) {
-      const it = tl[i];
-      if (it.kind === "text" && it.text) {
-        if (fallback.startsWith(it.text)) fallback = fallback.slice(it.text.length).trim();
-        break;
-      }
-    }
-    return fallback;
-  }
-  return msg.content;
-}
-
 /** 同轮「思考后正文复述」去重：模型常先想一句结论，紧接着在正文里原样再说一遍。
  *  紧随其后的正文以该思考开头时，隐藏思考行（正文已完整包含，避免文字重复）。 */
 function dropEchoedThinking(items: TimelineItem[]): TimelineItem[] {
@@ -130,23 +82,6 @@ function dropEchoedThinking(items: TimelineItem[]): TimelineItem[] {
     const b = next.text.replace(/\s+/g, "");
     return a.length < 12 || !b.startsWith(a);
   });
-}
-
-/**
- * 时间轴末尾是否存在"正在进行"的条目（思考 / 运行中的工具 / 流式输出）。
- * 返回 false 表示模型正在准备下一轮输出（包括正在生成工具参数），
- * 此时需要补一行状态提示，以免看起来卡住。
- */
-export function hasLiveItem(msg: StreamMessage): boolean {
-  if (msg.status !== "streaming") return false;
-  const tl = msg.timeline ?? [];
-  const last = tl[tl.length - 1];
-  if (!last) return false;
-  if (last.kind === "thinking") return last.duration_ms == null;
-  if (last.kind === "tool") return last.status === "running";
-  if (last.kind === "compress") return last.status === "running";
-  if (last.kind === "plan") return false; // 计划已定义，等待下一轮模型输出
-  return true; // text（最终回答流式输出）
 }
 
 /** 历史消息合成：无实时 timeline 时由 reasoning + tool_calls 推导静态条目。 */
@@ -250,19 +185,11 @@ function ThinkLine({
   duration?: number;
 }) {
   const [open, setOpen] = useState(live); // 思考中默认展开，实时跟随流式输出
-  const [now, setNow] = useState(() => Date.now());
   const manualRef = useRef(false); // 用户手动点击后不再自动切换
   useEffect(() => {
     // 思考结束自动收起为摘要（用户未手动干预时），保持历史列表整洁
     if (!live && !manualRef.current) setOpen(false);
   }, [live]);
-  // 实时计时：思考内容停止增长后（模型正在生成工具参数），计时仍在走，
-  // 让用户能看出任务还在推进，而不是界面卡住了
-  useEffect(() => {
-    if (!live || !start) return;
-    const id = window.setInterval(() => setNow(Date.now()), 500);
-    return () => window.clearInterval(id);
-  }, [live, start]);
   return (
     <div className="pflow-line">
       <button
@@ -280,7 +207,7 @@ function ThinkLine({
         <span className="pflow-meta">
           {live ? (
             <>
-              {start ? <span className="pflow-dur">{fmtDuration(now - start)}</span> : null}
+              {start ? <LiveDuration start={start} /> : null}
               <span className="tp-badge running">思考中</span>
             </>
           ) : (
@@ -302,12 +229,6 @@ function ThinkLine({
 function CompressLine({ item }: { item: Extract<TimelineItem, { kind: "compress" }> }) {
   const live = item.status === "running";
   const [open, setOpen] = useState(false);
-  const [now, setNow] = useState(Date.now());
-  useEffect(() => {
-    if (!live) return;
-    const timer = window.setInterval(() => setNow(Date.now()), 200);
-    return () => window.clearInterval(timer);
-  }, [live]);
 
   return (
     <div className={`pflow-line compress-${item.status}`}>
@@ -322,7 +243,7 @@ function CompressLine({ item }: { item: Extract<TimelineItem, { kind: "compress"
         <span className="pflow-brief">优化上下文</span>
         <span className="pflow-meta">
           {live ? (
-            <span className="pflow-dur">{fmtDuration(now - item.start)}</span>
+            <LiveDuration start={item.start} />
           ) : (
             <>
               {item.duration_ms != null && <span className="pflow-dur">{fmtDuration(item.duration_ms)}</span>}

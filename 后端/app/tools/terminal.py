@@ -407,13 +407,20 @@ def make_process_tool(ctx: ToolContext):
         """
         查看、列出或停止由 terminal 工具后台启动的进程
 
+        适用：后台启动了 dev server / watch 任务后，查看运行日志（log）、列出所有后台进程
+        （list）、或在不需要时停止进程树（stop）。日志保存在工作区 .agent_logs 下。
+
+        只能停止本 Agent 在当前工作区启动并记录过的 PID；非 Agent 启动的进程一律拒绝停止，
+        请改用 list_ports / port_info 查看占用并由用户决定是否处理。stop 会连同子进程一起
+        终止；list 会显示已退出进程的退出码与退出时间。
+
         Args:
-            action: "log" 查看后台进程日志；"stop" 停止后台进程（连同子进程）；"list" 列出本工作区后台进程
-            pid: 后台进程的 PID（log/stop 模式需要）
-            lines: log 模式下返回的最后行数（1-500，默认 100）
+            action: "log" 查看后台日志；"stop" 停止后台进程树；"list" 列出后台进程。
+            pid: 后台进程 PID，log/stop 模式必填；可用 list 查询。
+            lines: log 模式返回的最后行数，默认 100，范围 1-500。
 
         Returns:
-            log 模式返回日志内容；stop 模式返回停止结果；list 模式返回进程清单
+            log 返回日志尾部；stop 返回停止结果；list 返回进程清单（PID、启动时间、命令、日志）。
         """
         ctx.check_stopped()
         pid = int(pid)
@@ -514,17 +521,25 @@ def make_terminal_tool(ctx: ToolContext):
         background: bool = False,
     ) -> str:
         """
-        在工作区内执行 shell 命令
+        在工作区内执行 shell 命令（Windows 用 PowerShell，其他平台用 bash）
+
+        适用：运行项目命令、安装工具、启动开发服务器、执行 git 等系统操作。命令在指定
+        工作目录下执行，cwd 必须是工作区内的子目录，不能越出工作区。
+
+        前台模式会流式输出，默认超时 120 秒（受系统上限约束），超时或用户停止会终止整个
+        进程树；输出过长时保留头尾。background=true 用于 dev server、watch 等长驻命令，
+        会立即返回 PID 与日志路径，之后用 process(action="log"/"stop") 管理。
+        高危命令（删除、格式化、git push/reset/clean、sudo、kill -9 等）需要用户审批；
+        杀整个进程族的命令（taskkill /IM、pkill -f、killall）会被直接拒绝。
 
         Args:
-            command: 要执行的完整命令字符串，例如 "python --version" 或 "git status"
-            cwd: 可选，相对工作区的子目录路径，不传则在工作区根目录执行；禁止越出工作区
-            timeout: 可选，前台模式下的命令超时秒数，超过会被强制终止
-            background: 是否后台运行。dev server、watch 等长驻命令必须传 true，
-                之后用 process 工具查看日志（action="log"）或停止（action="stop"）
+            command: 要执行的完整命令字符串，例如 "python --version" 或 "npm run dev"。
+            cwd: 可选，工作区内的子目录路径；留空表示工作区根目录，禁止越出工作区。
+            timeout: 前台模式超时秒数，默认 120；不得小于 1，上限由系统配置决定。
+            background: 是否后台运行，默认 False；长驻服务必须设为 True。
 
         Returns:
-            前台模式返回命令输出（含退出码、耗时和工作目录）；后台模式返回 PID、日志路径和启动日志预览
+            前台模式返回退出码、耗时、工作目录与输出；后台模式返回 PID、日志路径和启动日志预览。
         """
         ctx.check_stopped()
 

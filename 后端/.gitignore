@@ -24,3 +24,9 @@ tests/.tmp/
 dist/
 build/
 *.egg-info/
+
+# ===== 测试/冒烟残留（手工脚本可能在 cwd 下生成）=====
+/agent-smoke-*/
+/agent-mut-*/
+/agent-sec-*/
+/tmp*/

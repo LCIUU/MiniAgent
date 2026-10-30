@@ -195,14 +195,21 @@ def make_code_intel_tools(ctx: ToolContext):
     @tool(parse_docstring=True)
     async def project_outline(path: str = "", max_items: int = 300) -> str:
         """
-        生成项目结构大纲：列出各源文件中的类/函数/方法定义
+        生成项目结构大纲：按文件列出类、函数、方法、接口等符号定义
+
+        适用：进入陌生项目或大仓库时先了解结构，再决定读哪些文件。Python 用 AST 精确解析，
+        JS/TS/Go/Rust/Java/Kotlin 用保守正则提取；结果按工作区缓存 60 秒。
+
+        只扫描源码文件（.py/.js/.ts/.tsx/.go/.rs/.java 等），忽略依赖与构建目录；
+        单个文件超过 1.5MB 会跳过。输出按文件分组，格式为 "行号 kind 名称(参数/基类)"。
+        需要按名称找具体符号时用 find_symbol；需要看实现时再用 read_file。
 
         Args:
-            path: 可选，只分析工作区内的某个子目录或文件
-            max_items: 最多返回的符号数（默认 300）
+            path: 只分析工作区内的某个子目录或文件；留空表示整个工作区。
+            max_items: 最多返回的符号数，默认 300，范围 20-1000。
 
         Returns:
-            按文件分组的符号清单，格式 file:line kind name(detail)
+            符号总数与按文件分组的符号清单；没有可分析源码时返回提示。
         """
         ctx.check_stopped()
         symbols = _scan(ctx.workspace, path)
@@ -223,15 +230,22 @@ def make_code_intel_tools(ctx: ToolContext):
     @tool(parse_docstring=True)
     async def find_symbol(name: str, kind: str = "", path: str = "") -> str:
         """
-        按名称查找类/函数/方法/接口定义
+        按名称查找类、函数、方法、接口等符号定义（不区分大小写的子串匹配）
+
+        适用：知道函数/组件名的一部分，想快速定位定义所在文件与行号。比 grep_search 更聚焦：
+        只返回符号定义，不返回调用处；找到后可 read_file 查看具体实现。
+
+        扫描范围与缓存规则同 project_outline；最多返回 100 个匹配。kind 可按类型过滤
+        （function / class / method / type / impl 等），path 可限定目录或文件。
+        需要查找调用/引用位置时改用 find_references。
 
         Args:
-            name: 符号名（支持不区分大小写的子串匹配）
-            kind: 可选，过滤符号类型，例如 function / class / method / type / impl
-            path: 可选，只查工作区内的某个子目录或文件
+            name: 符号名或其中一部分，不区分大小写；不能为空。
+            kind: 可选，符号类型过滤，例如 function / class / method / type / impl。
+            path: 可选，只查某个子目录或文件，相对当前工作区。
 
         Returns:
-            匹配的符号列表，格式 file:line kind name(detail)
+            "相对路径:行号 kind 名称(参数/基类)" 列表；无匹配时返回提示。
         """
         ctx.check_stopped()
         needle = name.strip().lower()
@@ -258,16 +272,23 @@ def make_code_intel_tools(ctx: ToolContext):
         max_results: int = 120,
     ) -> str:
         """
-        查找某个符号/标识符在源码中的全部引用位置（定义、调用、导入都会列出）
+        查找某个标识符在源码中的全部引用位置（定义、调用、导入都会列出）
+
+        适用：重命名函数/变量/组件前评估影响面，或确认某个 API 在哪些文件被使用。
+        按整词匹配，避免 "user" 命中 "username"；name 必须是单个标识符，不支持正则和空格。
+
+        只扫描源码文件，自动忽略依赖/构建目录；最多返回 max_results 条（上限 500），
+        达到上限时结果带 "+" 标记。include 可按文件名或相对路径过滤（如 "*.tsx"）。
+        需要判断哪些文件 import 了目标文件时用 find_dependents。
 
         Args:
-            name: 标识符名称（整词匹配，例如 SettingsPanel 或 resolve_workspace_path）
-            path: 可选，只查工作区内的某个子目录或文件
-            include: 可选，文件类型过滤 glob，例如 "*.tsx"
-            max_results: 可选，最多返回的引用条数（默认 120，上限 500）
+            name: 标识符名称，例如 SettingsPanel 或 resolve_workspace_path；必须是单个标识符。
+            path: 可选，只查某个子目录或文件，相对当前工作区。
+            include: 可选，文件过滤 glob，例如 "*.tsx"；留空表示所有源码文件。
+            max_results: 最多返回的引用条数，默认 120，上限 500。
 
         Returns:
-            引用列表，格式 file:line: 行内容
+            "相对路径:行号: 行内容" 列表；无引用时返回提示。
         """
         ctx.check_stopped()
         needle = name.strip()
@@ -315,15 +336,23 @@ def make_code_intel_tools(ctx: ToolContext):
         max_results: int = 120,
     ) -> str:
         """
-        找出哪些文件通过 import/require 依赖了指定文件（改动前评估影响面）
+        找出通过 import/require 依赖了指定文件的源码文件（改动前评估影响面）
+
+        适用：修改被多个文件引用的模块前，先确认哪些文件会受影响。通过 import/require
+        语句的模块名做启发式匹配（支持 JS/TS 的 from/require/import() 与 Python 的
+        import/from ... import），它不是完整的模块解析器，结果需结合判断。
+
+        扫描整个工作区源码（可用 include 过滤），自动跳过依赖/构建目录；目标文件名是
+        index/main/__init__ 时改用其所在目录名推断模块名。最多返回 max_results 条（上限 500）。
+        查找符号级引用请用 find_references。
 
         Args:
-            path: 目标文件（或目录）路径，相对工作区，例如 "src/store.ts"
-            include: 可选，只在这些文件中查找，glob 形式，例如 "*.py"
-            max_results: 可选，最多返回条数（默认 120，上限 500）
+            path: 目标文件或目录，相对当前工作区，例如 "src/store.ts"；必须存在。
+            include: 可选，只在匹配的文件中查找，glob 形式，例如 "*.py"。
+            max_results: 最多返回条数，默认 120，上限 500。
 
         Returns:
-            依赖该文件的源码文件与对应 import 行
+            "相对路径:行号: import 行" 列表；无依赖时返回提示。
         """
         ctx.check_stopped()
         try:

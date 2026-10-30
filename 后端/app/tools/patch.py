@@ -165,15 +165,22 @@ def make_patch_tool(ctx: ToolContext):
     @tool(parse_docstring=True)
     async def apply_patch(patch: str, dry_run: bool = False) -> str:
         """
-        用标准 unified diff 一次性修改一个或多个文件
+        用标准 unified diff 精准修改一个或多个文件（多处/跨文件修改首选）
+
+        适用：同一文件多处修改、一次修改多个文件、需要精确控制增删行。只描述改动片段，
+        不必重写整个文件，比整份 write_file 更安全、diff 也更易审查。
+
+        patch 必须是标准 unified diff：---/+++ 文件头加 @@ -旧起,旧数 +新起,新数 @@ hunk，
+        上下文行以空格开头，删除行以 - 开头，新增行以 + 开头；新建文件用 --- /dev/null，
+        删除文件用 +++ /dev/null。所有文件先全部校验再统一落盘，任何一处上下文不匹配都会
+        整体失败、不产生半成品。删除文件会弹出独立确认卡。建议先用 dry_run=true 预览 diff。
 
         Args:
-            patch: 标准 unified diff 文本，包含 ---/+++ 文件头与 @@ hunk；
-                新建文件用 --- /dev/null，删除文件用 +++ /dev/null
-            dry_run: 可选，默认 False；True 时只校验并返回每个文件的 diff 预览，不写入
+            patch: 完整 unified diff 文本；文件路径相对工作区，可带 a/、b/ 前缀。
+            dry_run: 默认 False；True 时只校验并返回每个文件的 diff 预览，不写入任何文件。
 
         Returns:
-            每个文件的修改结果与增删行数；任何一处校验失败则整体不落盘
+            每个文件的修改结果与 +新增/-删除 行数；校验失败时返回具体位置与原因。
         """
         ctx.check_stopped()
         try:

@@ -21,15 +21,23 @@ def make_checkpoint_tool(ctx: ToolContext):
         label: str = "",
     ) -> str:
         """
-        创建/查看/恢复整个工作区的快照（批量修改前的安全点，可整体回滚）
+        创建、查看或恢复整个工作区的快照（批量修改前的安全点，可整体回滚）
+
+        适用：执行批量替换、批量编码转换、大规模重构前先创建快照；出问题时可整体恢复。
+        快照保存到 .agent_backups/checkpoints，自动忽略 .git、node_modules、.venv 等目录，
+        单文件上限 5MB、总大小上限 300MB、最多 20000 个文件，默认保留最近 10 个快照。
+
+        create 返回快照 id 与文件数/体积；list 查看最近快照；restore 需要用户审批，
+        恢复前会自动再创建一个 pre-restore 快照，选错时可再次退回。工作区过大导致快照
+        创建失败时，写操作仍会逐文件备份到 .agent_backups。
 
         Args:
-            action: "create" 创建快照；"list" 列出最近快照；"restore" 恢复到指定快照
-            checkpoint_id: 可选，restore 时要恢复的快照 id；为空则恢复最近一个
-            label: 可选，create 时给快照加一句说明，例如 "批量替换前"
+            action: "create" 创建快照；"list" 列出最近快照；"restore" 恢复到指定快照。
+            checkpoint_id: 可选，restore 时的快照 id；留空表示恢复最近一个。
+            label: 可选，create 时给快照加说明，例如 "批量替换前"。
 
         Returns:
-            创建/列表/恢复结果
+            创建/列表/恢复结果；失败时返回原因。
         """
         ctx.check_stopped()
         action = (action or "create").strip().lower()

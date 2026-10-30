@@ -119,13 +119,21 @@ def make_security_tool(ctx: ToolContext):
         """
         扫描工作区中的硬编码密钥、密码、私钥与带凭证的连接串（只读，结果脱敏）
 
+        适用：提交前安全检查、接手项目时排查泄露风险。识别私钥头、AWS/GitHub/Slack/Google/
+        Anthropic/OpenAI 等常见 Key、JWT、Bearer Token、带账号密码的连接串，以及
+        api_key/secret/password 等字段的可疑硬编码值。
+
+        只读，不修改任何文件；命中值一律脱敏（仅保留少量前后缀），常见占位符（your-、xxx、
+        changeme、process.env 等）会自动忽略。自动跳过二进制文件与依赖/构建目录，
+        单文件上限 1MB，单行只记第一条命中规则。发现后建议把密钥移入 .env 并加入 .gitignore。
+
         Args:
-            path: 可选，扫描起始目录/文件，相对工作区，不传则整个工作区
-            include: 可选，文件过滤 glob，例如 "*.py"、".env*"
-            max_results: 可选，最多返回的命中条数（默认 100）
+            path: 可选，扫描起始目录或文件，相对当前工作区；留空表示整个工作区。
+            include: 可选，文件过滤 glob，例如 "*.py"、".env*"。
+            max_results: 最多返回的命中条数，默认 100，上限 500。
 
         Returns:
-            按严重程度分组的命中清单（文件:行 + 脱敏片段 + 规则名）
+            按高危/中危分组的命中清单（文件:行 + 规则名 + 脱敏值）；无命中时返回扫描结论。
         """
         ctx.check_stopped()
         try:

@@ -194,14 +194,21 @@ def make_web_search_tool(ctx: ToolContext):
         max_results: int = 5,
     ) -> str:
         """
-        搜索互联网获取最新信息
+        搜索互联网获取最新信息（Tavily API）
+
+        适用：查询最新的技术文档、库版本、API 用法、报错解决方案、新闻等模型知识之外的
+        实时信息。搜索完成后通常用 web_fetch 抓取具体页面的完整正文。
+
+        需要配置 Tavily API Key（设置页或 TAVILY_API_KEY）；未配置时返回明确提示。
+        返回结果包含标题、URL 和内容摘要；max_results 最多 10 条。不要用它搜索本地代码，
+        本地内容用 grep_search / find_symbol。
 
         Args:
-            query: 搜索关键词，例如技术文档、API 用法、报错解决方案
-            max_results: 可选，返回结果条数，最多 10 条
+            query: 搜索关键词或问题描述，例如 "FastAPI SSE 实现"。
+            max_results: 返回结果条数，默认 5，最多 10。
 
         Returns:
-            返回搜索结果标题、链接和内容摘要
+            编号的搜索结果列表（标题、URL、摘要）；无结果或未配置 Key 时返回提示。
         """
         ctx.check_stopped()
         api_key = get_effective("tavily_api_key", "")
@@ -241,14 +248,22 @@ def make_web_search_tool(ctx: ToolContext):
     @tool(parse_docstring=True)
     async def web_fetch(url: str, max_chars: int = 0) -> str:
         """
-        抓取网页并提取正文（用于阅读文档、issue、报错页面）
+        抓取公网网页并提取正文（用于阅读文档、issue、报错页面）
+
+        适用：web_search 找到链接后读取完整内容，或直接打开已知的文档/博客链接。
+        会自动把 HTML 转为纯文本并保留段落；JSON 响应会格式化输出。
+
+        安全限制：只允许 http/https 公网地址；拒绝 localhost、私有网段、链路本地和保留地址
+        （防 SSRF），每一跳重定向都会重新校验；响应上限 2MB、最多 4 次重定向、单次 30 秒超时。
+        max_chars 控制返回正文长度，默认使用系统输出上限。不能访问本地服务，本地 API 调试
+        请用 http_request。
 
         Args:
-            url: 要抓取的 http/https URL
-            max_chars: 可选，返回正文的最大字符数；0 表示使用系统默认上限
+            url: 要抓取的 http/https URL，必须解析到公网地址。
+            max_chars: 返回正文的最大字符数，默认 0 表示使用系统默认上限。
 
         Returns:
-            网页标题、最终 URL 与正文；无法抓取时返回原因
+            网页标题、最终 URL、内容类型与正文；失败时返回具体原因。
         """
         ctx.check_stopped()
         try:

@@ -137,6 +137,30 @@ def _eligible_start(messages: list[BaseMessage], keep: int) -> int:
     return max(0, start)
 
 
+def _tail_budget_start(messages: list[BaseMessage], budget: int, min_keep: int) -> int:
+    """按 token 预算倒序累加，返回保留窗口起点（尽量不超预算）。
+
+    固定条数（keep=30）在工具结果很大时会把一堆超长消息留在窗口里，压缩完仍然
+    顶在上限之上，于是每轮都重新压缩、每轮都换一份摘要——上下文前缀反复重建，
+    隐式缓存全部失效。这里改成按 token 预算收缩：至少保留 min_keep 条（当前任务
+    不能整段被摘要掉），其余按预算从近到远保留。
+    """
+    if not messages:
+        return 0
+    costs = [count_tokens_zh_aware([m]) for m in messages]
+    start = len(messages)
+    total = 0
+    while start > 0:
+        if len(messages) - start >= min_keep and total + costs[start - 1] > budget:
+            break
+        total += costs[start - 1]
+        start -= 1
+    # 与 _eligible_start 同一规则：保留段不能以孤立的 ToolMessage 开头
+    while start > 0 and isinstance(messages[start], ToolMessage):
+        start -= 1
+    return start
+
+
 def _db_ts(msg: Any) -> float | None:
     value = getattr(msg, "additional_kwargs", {}).get("db_ts")
     if isinstance(value, bool) or not isinstance(value, (int, float)):
@@ -311,6 +335,24 @@ def _resolve_threshold(model: str = "") -> int:
     return max(8000, int(window * ratio))
 
 
+def _keep_ratio() -> float:
+    """压缩后保留窗口占阈值的比例（0.45 = 留出一半余量再触发下一次压缩）。"""
+    try:
+        ratio = float(get_effective("summary_keep_ratio", 0.45))
+    except (TypeError, ValueError):
+        ratio = 0.45
+    return min(max(ratio, 0.1), 0.9)
+
+
+def _min_keep_messages() -> int:
+    """保留窗口的条数下限：再省也要留下当前任务的最后几次往返。"""
+    try:
+        value = int(get_effective("summary_min_keep_messages", 4))
+    except (TypeError, ValueError):
+        value = 4
+    return max(value, 1)
+
+
 async def maybe_summarize_messages(
     messages: list[BaseMessage],
     llm: Any,
@@ -321,6 +363,11 @@ async def maybe_summarize_messages(
 
     阈值：显式 summary_threshold_tokens > 0 时优先；否则按模型的 context_window
     × summary_threshold_ratio 自动计算（目录外模型回退 60k）。
+
+    保留窗口先按 summary_keep_messages 条数取，若这部分仍超过
+    summary_keep_ratio × 阈值，则继续按 token 预算收缩（下限
+    summary_min_keep_messages 条），保证压缩后留出足够余量、不会下一轮立刻再压缩
+    ——每次压缩都会改写上下文前缀，重复压缩等于把隐式缓存全部作废。
 
     emit 传入时，摘要开始/结束会各广播一条事件，供前端展示"正在优化上下文"。
     """
@@ -352,9 +399,23 @@ async def maybe_summarize_messages(
     if body and _is_summary_message(body[0]):
         previous_summary = body.pop(0)
 
+    # 保留窗口：先按条数（summary_keep_messages），再按 token 预算收缩。
+    # 条数口径单独使用时有两个坑：大工具结果会让压缩后仍顶在阈值之上（下一轮立刻
+    # 再压缩，每轮换摘要 = 每轮缓存全灭）；消息条数不足 keep 时又完全不压缩，
+    # 少量超长消息能把上下文顶穿模型窗口。
+    budget = max(1, int(threshold * _keep_ratio()))
+    min_keep = max(1, min(_min_keep_messages(), len(body) - 1))
     start = _eligible_start(body, keep)
+    tail_tokens = count_tokens_zh_aware(body[start:])
+    if start <= 0 and tail_tokens <= budget:
+        logger.info("[summarize] 可摘要消息不足（keep=%d）且未超保留预算，跳过", keep)
+        return messages
+    if tail_tokens > budget:
+        start = max(start, _tail_budget_start(body, budget, min_keep))
+    if len(body) > 1:
+        start = min(start, len(body) - 1)  # 至少留下最后一条（当前用户任务）
     if start <= 0:
-        logger.info("[summarize] 可摘要消息不足（keep=%d），跳过", keep)
+        logger.info("[summarize] 保留窗口已覆盖全部消息，跳过")
         return messages
     to_summarize = ([previous_summary] if previous_summary is not None else []) + body[:start]
     preserved = body[start:]
@@ -388,9 +449,10 @@ async def maybe_summarize_messages(
             additional_kwargs={"is_summary": True, "db_cutoff": cutoff},
         )
         result = [*head, summary_msg, *preserved]
+        after = count_tokens_zh_aware(result)
         logger.info(
-            "[summarize] 完成：%d 条 → 摘要 + %d 条保留（摘要前 %d tokens）",
-            len(messages), len(preserved), total,
+            "[summarize] 完成：%d 条 → 摘要 + %d 条保留，%d → %d tokens（阈值 %d）",
+            len(messages), len(preserved), total, after, threshold,
         )
 
     if emit is not None:

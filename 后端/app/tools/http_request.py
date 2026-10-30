@@ -69,16 +69,24 @@ def make_http_tools(ctx: ToolContext):
         body: str = "",
     ) -> str:
         """
-        发送 HTTP 请求测试 API 端点
+        发送 HTTP 请求测试 API 端点（本地开发调试用）
+
+        适用：验证本地后端接口、检查状态码/响应头/响应体、复现前端请求问题。
+        支持 GET/POST/PUT/DELETE/PATCH/HEAD/OPTIONS；headers 用 JSON 字符串传入；
+        body 用于 POST/PUT/PATCH，按 UTF-8 编码发送。
+
+        安全限制：仅允许 http/https；拒绝云元数据地址和 10.x/192.168.x/172.16-31.x 私有网段，
+        本机回环地址放行（工具用途就是本地 API 调试）；重定向手动跟随且每跳重新校验；
+        响应上限 2MB，超时 30 秒。JSON 响应会格式化输出，超出 4000 字符时截断。
 
         Args:
-            url: 请求 URL（如 http://localhost:8000/api/health）
-            method: HTTP 方法，GET / POST / PUT / DELETE / PATCH，默认 GET
-            headers: 可选，JSON 格式的请求头（如 '{"Authorization": "Bearer xxx"}'）
-            body: 可选，请求体内容（POST/PUT/PATCH 时使用，JSON 或纯文本）
+            url: 请求 URL，例如 http://localhost:8000/api/health；不能为空。
+            method: HTTP 方法，默认 GET；支持 GET/POST/PUT/DELETE/PATCH/HEAD/OPTIONS。
+            headers: 可选，JSON 对象字符串，例如 '{"Authorization": "Bearer xxx"}'。
+            body: 可选，请求体文本；JSON 请传合法 JSON 字符串，GET 请求会忽略。
 
         Returns:
-            响应状态码、响应头和响应体
+            状态码、耗时、Content-Type、响应头与响应体；失败时返回原因。
         """
         ctx.check_stopped()
         if not url.strip():
