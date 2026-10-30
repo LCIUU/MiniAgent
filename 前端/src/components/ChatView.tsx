@@ -162,10 +162,13 @@ export const MessageView = memo(function MessageView({
   return (
     <div className="msg msg-assistant">
       <ProcessTimeline msg={msg} />
-      {streaming && !hasLiveItem(msg) && (
-        <div className="status-line">
+      {answer && <Markdown content={answer} streaming={streaming} />}
+      {/* 状态行放在正文之后：模型先输出说明再流式生成工具参数时，
+          进度提示应跟在内容末尾，而不是插在过程流和正文之间 */}
+      {streaming && (msg.progress || !hasLiveItem(msg)) && (
+        <div className="status-line tail">
           <span className="spinner" />
-          智能体正在规划
+          {msg.progress || "智能体正在规划"}
         </div>
       )}
       {msg.pendingApproval && (
@@ -180,7 +183,6 @@ export const MessageView = memo(function MessageView({
           onAnswer={(answers) => onAnswer(msg.pendingQuestion!.question_id, answers)}
         />
       )}
-      {answer && <Markdown content={answer} streaming={streaming} />}
     </div>
   );
 });

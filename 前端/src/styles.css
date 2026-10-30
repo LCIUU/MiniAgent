@@ -1664,6 +1664,11 @@ body {
   margin-bottom: 12px;
 }
 
+/* 跟在正文末尾的状态行：与上文留一点间距，不再向下撑开 */
+.status-line.tail {
+  margin: 10px 0 0;
+}
+
 .spinner {
   width: 14px;
   height: 14px;
@@ -3280,6 +3285,10 @@ body {
   font-size: 11px;
   color: var(--ds-text-3);
   flex-shrink: 0;
+  /* 计时文字宽度会随位数变化，定宽+右对齐避免每分钟推挤右侧徽章 */
+  min-width: 56px;
+  text-align: right;
+  font-variant-numeric: tabular-nums;
 }
 .pflow-caret {
   flex-shrink: 0;

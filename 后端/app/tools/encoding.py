@@ -117,16 +117,23 @@ def make_encoding_tool(ctx: ToolContext):
         max_files: int = 2000,
     ) -> str:
         """
-        检查文件的文本编码（UTF-8 / GBK / 乱码），可选把 GBK 文件转成 UTF-8
+        检查文件编码（UTF-8 / UTF-8 BOM / GBK / 乱码），可选把 GBK 文件转成 UTF-8
+
+        适用：遇到中文乱码、跨平台编辑后语法报错、历史项目编码不统一时。默认只检查不改文件；
+        fix=true 时只转换"UTF-8 解码失败但 GBK 可解码"的文件，转换前创建整仓快照并逐文件备份。
+
+        已是合法 UTF-8 但内容像二次编码乱码（如"锟斤拷"）的文件只报告、不强改，因为无法可靠
+        还原；UTF-8 BOM 文件也只报告（一般无害）。扫描忽略依赖/构建目录，单文件上限 2MB，
+        最多扫描 max_files 个文件（上限 5000）。
 
         Args:
-            path: 可选，检查起始目录/文件，相对工作区，不传则整个工作区
-            include: 可选，文件过滤 glob，例如 "*.js"、"src/**"
-            fix: 可选，是否把"GBK 可解码但 UTF-8 解码失败"的文件转成 UTF-8，默认 False 只检查
-            max_files: 可选，最多扫描的文件数（默认 2000）
+            path: 可选，检查起始目录或文件，相对当前工作区；留空表示整个工作区。
+            include: 可选，文件过滤 glob，例如 "*.js" 或 "src/**"。
+            fix: 是否把 GBK 文件转换为 UTF-8，默认 False 只检查。
+            max_files: 最多扫描的文件数，默认 2000，上限 5000。
 
         Returns:
-            编码分布统计与问题文件清单；fix=true 时返回转换结果
+            编码分布与问题文件清单；fix=true 时返回转换结果与快照 id。
         """
         ctx.check_stopped()
         try:

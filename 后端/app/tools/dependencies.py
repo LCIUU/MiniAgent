@@ -94,10 +94,16 @@ def make_dependency_tools(ctx: ToolContext):
     @tool(parse_docstring=True)
     async def detect_dependencies() -> str:
         """
-        检测当前项目的类型和包管理器
+        检测当前项目的类型和包管理器（只读）
+
+        适用：安装/卸载依赖前确认项目类型与应当使用的包管理器。按项目根目录的配置文件
+        判断：Python（pyproject.toml/requirements.txt/setup.py/setup.cfg，包管理器按
+        uv.lock/poetry.lock/pdm.lock 推断 pip/uv/poetry/pdm）、Node（package.json，按
+        bun/pnpm/yarn lock 推断）、Rust（Cargo.toml → cargo）、Go（go.mod → go mod）。
+        不会修改任何文件。
 
         Returns:
-            项目类型、包管理器和已有依赖概览
+            项目类型、包管理器与配置文件清单；无法识别时返回提示。
         """
         ctx.check_stopped()
         ws = ctx.workspace
@@ -127,10 +133,17 @@ def make_dependency_tools(ctx: ToolContext):
     @tool(parse_docstring=True)
     async def list_dependencies() -> str:
         """
-        列出当前项目已安装的依赖
+        列出当前项目已安装的依赖（只读）
+
+        适用：确认某个包是否已安装、查看版本、排查依赖冲突。根据项目类型和包管理器
+        执行对应命令：Python 用 pip list / uv pip list / poetry show / pdm list；
+        Node 用 npm/pnpm/yarn/bun 的 list；Rust 用 cargo tree；Go 用 go list -m all。
+        不会修改项目。
+
+        输出可能较长，超过系统上限时保留头尾；命令失败时返回退出码和错误输出。
 
         Returns:
-            依赖清单
+            依赖清单；无法识别项目类型或命令失败时返回原因。
         """
         ctx.check_stopped()
         ws = ctx.workspace
@@ -171,14 +184,23 @@ def make_dependency_tools(ctx: ToolContext):
     @tool(parse_docstring=True)
     async def install_dependency(packages: str, dev: bool = False) -> str:
         """
-        安装一个或多个依赖包
+        安装一个或多个依赖包（自动使用项目现有的包管理器，需要用户审批）
+
+        适用：项目缺少运行/测试所需依赖时。自动识别项目类型并调用对应包管理器：
+        Python（uv add / poetry add / pdm add / pip install）、Node（bun add / pnpm add /
+        yarn add / npm install）、Rust（cargo add）、Go（go get）。会修改依赖清单和
+        lock 文件，属于中等风险操作。
+
+        dev=true 时尽可能安装为开发依赖（uv --dev、poetry --group dev、pnpm -D、
+        npm --save-dev 等）；pip/cargo/go 没有统一的 dev 语义，会忽略该参数。
+        超时 300 秒，输出过长时保留头尾。
 
         Args:
-            packages: 要安装的包名，空格分隔（如 "requests flask" 或 "react lodash"）
-            dev: 是否安装为开发依赖，默认 False
+            packages: 要安装的包名，空格分隔，例如 "requests flask" 或 "react lodash"。
+            dev: 是否安装为开发依赖，默认 False。
 
         Returns:
-            安装结果
+            安装结果与包管理器输出；用户拒绝或失败时返回原因。
         """
         ctx.check_stopped()
         ws = ctx.workspace
@@ -210,7 +232,7 @@ def make_dependency_tools(ctx: ToolContext):
             elif pm == "pdm":
                 cmd = ["pdm", "add"] + pkgs + (["--dev"] if dev else [])
             else:
-                cmd = ["pip", "install"] + pkgs
+                cmd = ["pip", "install", *pkgs]
         elif ptype == "node":
             pm = _detect_node_pm(ws)
             if pm == "bun":
@@ -222,9 +244,9 @@ def make_dependency_tools(ctx: ToolContext):
             else:
                 cmd = ["npm", "install"] + pkgs + (["--save-dev"] if dev else [])
         elif ptype == "rust":
-            cmd = ["cargo", "add"] + pkgs
+            cmd = ["cargo", "add", *pkgs]
         elif ptype == "go":
-            cmd = ["go", "get"] + pkgs
+            cmd = ["go", "get", *pkgs]
         else:
             return "无法识别项目类型。"
 
@@ -237,13 +259,19 @@ def make_dependency_tools(ctx: ToolContext):
     @tool(parse_docstring=True)
     async def uninstall_dependency(packages: str) -> str:
         """
-        卸载一个或多个依赖包
+        卸载一个或多个依赖包（自动使用项目现有的包管理器，需要用户审批）
+
+        适用：清理不再使用的包、解决版本冲突。按项目类型调用 uv/poetry/pdm/pip、
+        bun/pnpm/yarn/npm、cargo remove 或 go mod edit -droprequire。会修改依赖清单和
+        lock 文件，且属于高风险操作，必须经用户确认；卸载前请确认代码中已无引用。
+
+        超时 120 秒。若只是暂时不用、之后可能恢复，优先考虑保留依赖。
 
         Args:
-            packages: 要卸载的包名，空格分隔
+            packages: 要卸载的包名，空格分隔。
 
         Returns:
-            卸载结果
+            卸载结果；用户拒绝或失败时返回原因。
         """
         ctx.check_stopped()
         ws = ctx.workspace
@@ -268,27 +296,27 @@ def make_dependency_tools(ctx: ToolContext):
         if ptype == "python":
             pm = _detect_python_pm(ws)
             if pm == "uv":
-                cmd = ["uv", "remove"] + pkgs
+                cmd = ["uv", "remove", *pkgs]
             elif pm == "poetry":
-                cmd = ["poetry", "remove"] + pkgs
+                cmd = ["poetry", "remove", *pkgs]
             elif pm == "pdm":
-                cmd = ["pdm", "remove"] + pkgs
+                cmd = ["pdm", "remove", *pkgs]
             else:
-                cmd = ["pip", "uninstall", "-y"] + pkgs
+                cmd = ["pip", "uninstall", "-y", *pkgs]
         elif ptype == "node":
             pm = _detect_node_pm(ws)
             if pm == "bun":
-                cmd = ["bun", "remove"] + pkgs
+                cmd = ["bun", "remove", *pkgs]
             elif pm == "pnpm":
-                cmd = ["pnpm", "remove"] + pkgs
+                cmd = ["pnpm", "remove", *pkgs]
             elif pm == "yarn":
-                cmd = ["yarn", "remove"] + pkgs
+                cmd = ["yarn", "remove", *pkgs]
             else:
-                cmd = ["npm", "uninstall"] + pkgs
+                cmd = ["npm", "uninstall", *pkgs]
         elif ptype == "rust":
-            cmd = ["cargo", "remove"] + pkgs
+            cmd = ["cargo", "remove", *pkgs]
         elif ptype == "go":
-            cmd = ["go", "mod", "edit", "-droprequire"] + pkgs
+            cmd = ["go", "mod", "edit", "-droprequire", *pkgs]
         else:
             return "无法识别项目类型。"
 

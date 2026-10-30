@@ -51,11 +51,18 @@ def make_env_tools(ctx: ToolContext):
         """
         检查环境变量是否已配置（只读，敏感值自动脱敏）
 
+        适用：排查配置问题，例如数据库连接、API Key、端口、运行环境变量是否设置。
+        默认检查一组常见项目变量（DATABASE_URL、REDIS_*、OPENAI/TAVILY 等 API Key、
+        NODE_ENV、PORT、PATH、VIRTUAL_ENV 等）；也可以传入自定义变量名。
+
+        只读取当前后端进程的环境变量，不会读取 .env 文件内容（.env 需由项目加载）。
+        名称含 key/secret/token/password/auth 的值会被脱敏；连接串中的密码部分也会替换为 ***。
+
         Args:
-            variables: 要检查的环境变量名，逗号或空格分隔；为空时检查常见项目变量
+            variables: 要检查的变量名，逗号或空格分隔；留空时检查常见项目变量。
 
         Returns:
-            各变量的值（敏感值自动脱敏）
+            每个变量的 ✓/✗ 状态与（脱敏后的）值。
         """
         ctx.check_stopped()
         names = (

@@ -35,14 +35,24 @@ function mapHistoryMsgs(msgs: Awaited<ReturnType<typeof api.listMessages>>, sess
   }));
 }
 
-/** 追加思考增量：连续思考合并进最后一个思考条目；阶段切换（forceNew）时开启新段。 */
-function withThinking(timeline: TimelineItem[], delta: string, forceNew: boolean): TimelineItem[] {
+/** 追加思考增量：连续思考合并进最后一个思考条目；阶段切换（forceNew）时开启新段。
+ *  durationMs 由后端随延迟下发的整段思考带回，直接定稿，避免按收到时间算成 0ms。 */
+function withThinking(
+  timeline: TimelineItem[],
+  delta: string,
+  forceNew: boolean,
+  durationMs?: number,
+): TimelineItem[] {
   const tl = [...timeline];
   const last = tl[tl.length - 1];
   if (last && last.kind === "thinking" && !forceNew) {
-    tl[tl.length - 1] = { ...last, text: last.text + delta };
+    tl[tl.length - 1] = {
+      ...last,
+      text: last.text + delta,
+      duration_ms: durationMs ?? last.duration_ms,
+    };
   } else {
-    tl.push({ kind: "thinking", id: uid(), start: Date.now(), text: delta });
+    tl.push({ kind: "thinking", id: uid(), start: Date.now(), text: delta, duration_ms: durationMs });
   }
   return tl;
 }
@@ -59,12 +69,13 @@ function withText(timeline: TimelineItem[], delta: string, forceNew: boolean): T
   return tl;
 }
 
-/** 思考段封口：给最后一个未计时的思考条目补时长（被 token/tool_start/plan 终止时调用）。 */
-function closeThinking(tl: TimelineItem[]): TimelineItem[] {
+/** 思考段封口：给最后一个未计时的思考条目补时长（被 token/tool_start/plan 终止时调用）。
+ *  后端 thinking_end 带真实时长时优先使用，避免把后续工具参数生成时间算进思考耗时。 */
+function closeThinking(tl: TimelineItem[], durationMs?: number): TimelineItem[] {
   const last = tl[tl.length - 1];
   if (last && last.kind === "thinking" && last.duration_ms == null) {
     const next = [...tl];
-    next[next.length - 1] = { ...last, duration_ms: Date.now() - last.start };
+    next[next.length - 1] = { ...last, duration_ms: durationMs ?? Date.now() - last.start };
     return next;
   }
   return tl;
@@ -205,7 +216,9 @@ const forceNewThinkingRef = { current: false };
 const forceNewTextRef = { current: false };
 // 流式增量合帧缓冲：SSE 事件突发到达时（一帧多个 token），合并到每帧一次渲染，
 // 避免 Markdown 高频全量重解析导致输出成块上屏
-const pendingOpsRef: { current: { kind: "thinking" | "token"; delta: string }[] } = { current: [] };
+const pendingOpsRef: {
+  current: { kind: "thinking" | "token"; delta: string; duration_ms?: number }[];
+} = { current: [] };
 const flushRafRef: { current: number | null } = { current: null };
 // 会话加载序号：快速连切会话时丢弃过期响应（防旧数据覆盖新会话）
 const loadSeqRef = { current: 0 };
@@ -243,7 +256,7 @@ export function useAgent() {
     let content = cur.content;
     for (const op of ops) {
       if (op.kind === "thinking") {
-        tl = withThinking(tl, op.delta, forceNewThinkingRef.current);
+        tl = withThinking(tl, op.delta, forceNewThinkingRef.current, op.duration_ms);
         forceNewThinkingRef.current = false;
         reasoning += op.delta;
       } else {
@@ -278,6 +291,10 @@ export function useAgent() {
       if (it.kind === "compress" && it.status === "running") {
         return { ...it, status: "done" as const, failed: true };
       }
+      // 运行结束时尚未收到 thinking_end 的思考补一个兜底耗时，避免"已完成"却无时间
+      if (it.kind === "thinking" && it.duration_ms == null) {
+        return { ...it, duration_ms: Date.now() - it.start };
+      }
       return it;
     });
     const tool_calls = (cur.tool_calls ?? []).map((tc) =>
@@ -309,8 +326,21 @@ export function useAgent() {
       switch (ev.type) {
         case "thinking": {
           if (!cur) return;
-          pendingOpsRef.current.push({ kind: "thinking", delta: ev.delta });
+          pendingOpsRef.current.push({
+            kind: "thinking",
+            delta: ev.delta,
+            duration_ms: ev.duration_ms,
+          });
           scheduleFlush();
+          break;
+        }
+        case "thinking_end": {
+          if (!cur) return;
+          flushPending();
+          const curNow = currentMsgRef.current;
+          upsertCurrent({
+            timeline: closeThinking(curNow?.timeline ?? [], ev.duration_ms),
+          });
           break;
         }
         case "token": {
@@ -340,6 +370,11 @@ export function useAgent() {
           setState({ runStartedAt: (ev.started_at ?? Date.now()) * (ev.started_at ? 1000 : 1) });
           break;
         }
+        case "progress": {
+          if (!cur) return;
+          upsertCurrent({ progress: ev.detail });
+          break;
+        }
         case "tool_start": {
           if (!cur) return;
           flushPending(); // 先落盘缓冲的流式增量，保证 timeline 顺序
@@ -359,6 +394,7 @@ export function useAgent() {
           upsertCurrent({
             tool_calls: updated,
             timeline: withToolStart(closedTl, ev),
+            progress: null,
           });
           break;
         }
@@ -516,7 +552,7 @@ export function useAgent() {
           clearStopTimer();
           flushPending(); // 收尾前先渲染尾部增量
           settleStreamingItems();
-          if (currentMsgRef.current) upsertCurrent({ status: "done", pendingQuestion: null, pendingApproval: null });
+          if (currentMsgRef.current) upsertCurrent({ status: "done", pendingQuestion: null, pendingApproval: null, progress: null });
           finalizeRun(ev.duration_ms);
           // 不依赖 SSE 连接关闭事件：run_done 到达即解除运行态，
           // 否则连接收尾稍慢时输入框会一直保持禁用
@@ -532,7 +568,7 @@ export function useAgent() {
             break;
           }
           settleStreamingItems();
-          upsertCurrent({ status: "error", pendingQuestion: null, pendingApproval: null });
+          upsertCurrent({ status: "error", pendingQuestion: null, pendingApproval: null, progress: null });
           finalizeRun();
           setState({ error: ev.message, running: false, connecting: false, runId: null });
           // 断开 SSE/WS，避免后端继续推送事件
@@ -591,7 +627,7 @@ export function useAgent() {
                 // 重连无望：收尾为错误态，避免界面永远显示"运行中"
                 flushPending();
                 settleStreamingItems();
-                upsertCurrent({ status: "error", pendingQuestion: null, pendingApproval: null });
+                upsertCurrent({ status: "error", pendingQuestion: null, pendingApproval: null, progress: null });
                 finalizeRun();
                 setState({
                   error: "事件流连接中断，自动重连失败（可刷新页面查看最终结果）",

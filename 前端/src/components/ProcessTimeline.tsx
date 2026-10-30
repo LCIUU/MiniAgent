@@ -26,6 +26,42 @@ function fmtDuration(ms?: number): string {
   return ms < 1000 ? `${Math.round(ms)} ms` : `${(ms / 1000).toFixed(2)} s`;
 }
 
+/** 实时耗时文案：1 秒内毫秒位逐帧变化太吵，按 0.5 秒步进；满 1 秒后逐帧平滑滚动。 */
+function liveDurationText(start: number, now: number): string {
+  const elapsed = now - start;
+  return elapsed < 1000
+    ? fmtDuration(Math.floor(elapsed / 500) * 500) // 0 ms / 500 ms
+    : fmtDuration(elapsed);
+}
+
+/** 实时耗时：计时器独立于此组件，按帧直接写 textContent，
+ *  不用 state 是为了避免每次 tick 重渲染整行（含展开的 Markdown 正文）。 */
+function LiveDuration({ start }: { start: number }) {
+  const ref = useRef<HTMLSpanElement>(null);
+  useEffect(() => {
+    let raf = 0;
+    let last = "";
+    const tick = () => {
+      const el = ref.current;
+      if (el) {
+        const text = liveDurationText(start, Date.now());
+        if (text !== last) {
+          el.textContent = text;
+          last = text;
+        }
+      }
+      raf = requestAnimationFrame(tick);
+    };
+    raf = requestAnimationFrame(tick);
+    return () => cancelAnimationFrame(raf);
+  }, [start]);
+  return (
+    <span className="pflow-dur" ref={ref}>
+      {liveDurationText(start, Date.now())}
+    </span>
+  );
+}
+
 function truncate1(s: string, max: number): string {
   const flat = s.replace(/\s+/g, " ").trim();
   return flat.length > max ? `${flat.slice(0, max)}…` : flat;
@@ -149,19 +185,11 @@ function ThinkLine({
   duration?: number;
 }) {
   const [open, setOpen] = useState(live); // 思考中默认展开，实时跟随流式输出
-  const [now, setNow] = useState(() => Date.now());
   const manualRef = useRef(false); // 用户手动点击后不再自动切换
   useEffect(() => {
     // 思考结束自动收起为摘要（用户未手动干预时），保持历史列表整洁
     if (!live && !manualRef.current) setOpen(false);
   }, [live]);
-  // 实时计时：思考内容停止增长后（模型正在生成工具参数），计时仍在走，
-  // 让用户能看出任务还在推进，而不是界面卡住了
-  useEffect(() => {
-    if (!live || !start) return;
-    const id = window.setInterval(() => setNow(Date.now()), 500);
-    return () => window.clearInterval(id);
-  }, [live, start]);
   return (
     <div className="pflow-line">
       <button
@@ -179,7 +207,7 @@ function ThinkLine({
         <span className="pflow-meta">
           {live ? (
             <>
-              {start ? <span className="pflow-dur">{fmtDuration(now - start)}</span> : null}
+              {start ? <LiveDuration start={start} /> : null}
               <span className="tp-badge running">思考中</span>
             </>
           ) : (
@@ -201,12 +229,6 @@ function ThinkLine({
 function CompressLine({ item }: { item: Extract<TimelineItem, { kind: "compress" }> }) {
   const live = item.status === "running";
   const [open, setOpen] = useState(false);
-  const [now, setNow] = useState(Date.now());
-  useEffect(() => {
-    if (!live) return;
-    const timer = window.setInterval(() => setNow(Date.now()), 200);
-    return () => window.clearInterval(timer);
-  }, [live]);
 
   return (
     <div className={`pflow-line compress-${item.status}`}>
@@ -221,7 +243,7 @@ function CompressLine({ item }: { item: Extract<TimelineItem, { kind: "compress"
         <span className="pflow-brief">优化上下文</span>
         <span className="pflow-meta">
           {live ? (
-            <span className="pflow-dur">{fmtDuration(now - item.start)}</span>
+            <LiveDuration start={item.start} />
           ) : (
             <>
               {item.duration_ms != null && <span className="pflow-dur">{fmtDuration(item.duration_ms)}</span>}

@@ -36,7 +36,9 @@ export interface Message {
 // SSE 事件类型
 export type AgentEvent =
   | { type: "status"; status: string; detail?: string }
-  | { type: "thinking"; delta: string }
+  | { type: "progress"; detail: string; tool?: string; chars?: number }
+  | { type: "thinking"; delta: string; duration_ms?: number }
+  | { type: "thinking_end"; duration_ms?: number }
   | { type: "token"; delta: string }
   | { type: "plan"; steps: string[]; todos?: { content: string; status: string }[] }
   | { type: "tool_start"; tool: string; args: Record<string, unknown>; call_id: string; started_at?: string }
@@ -160,6 +162,7 @@ export interface StreamMessage {
   session_id: string;
   pendingApproval?: ApprovalRequest | null;
   pendingQuestion?: QuestionRequest | null;
+  progress?: string | null; // 工具参数生成进度文案（长参数生成期间的可见反馈）
   reasoning?: string; // 模型思考过程（纯文本累计，兼容字段）
   plan?: string[]; // 模型给出的执行计划
   timeline?: TimelineItem[]; // 思考过程时间轴（按事件到达顺序）

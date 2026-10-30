@@ -38,14 +38,21 @@ def make_memory_tools(ctx: ToolContext):
     @tool(parse_docstring=True)
     async def project_memory(action: str = "read", content: str = "") -> str:
         """
-        读取或追加项目长期记忆（保存在工作区 .agent/memory.md）
+        读取或写入项目长期记忆（跨会话保存，位于工作区 .agent/memory.md）
+
+        适用：记录项目约定、常用命令、架构决策、踩坑结论等下次会话仍需知道的信息。
+        read 返回当前记忆；append 追加一段（推荐）；replace 覆盖全部内容。
+        写入需要用户审批，追加时自动用空行分隔，内容上限 20000 字符（超出会截断）。
+
+        不要把临时任务进度、代码细节或可从文件直接读到的内容写进记忆；
+        需要整体重写时才用 replace，日常增量记录用 append。
 
         Args:
-            action: "read" 读取；"append" 追加一段；"replace" 覆盖全部内容
-            content: append/replace 时需要写入的文本
+            action: "read" 读取；"append" 追加一段；"replace" 覆盖全部内容。
+            content: append/replace 时要写入的文本；read 时忽略。
 
         Returns:
-            读取结果或写入确认
+            读取结果或写入确认；失败时返回原因。
         """
         ctx.check_stopped()
         try:

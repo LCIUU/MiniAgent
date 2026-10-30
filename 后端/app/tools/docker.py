@@ -71,10 +71,17 @@ def make_docker_tools(ctx: ToolContext):
     @tool(parse_docstring=True)
     async def docker_status() -> str:
         """
-        检查 Docker 环境状态：是否可用、当前容器、项目 Docker 配置
+        检查 Docker 环境状态：是否安装/运行、项目 Docker 配置、运行中的容器
+
+        适用：项目涉及容器化部署时，先确认 Docker daemon 是否可用、当前有哪些容器在跑、
+        工作区是否包含 Dockerfile / compose 文件。只读，不会启动或修改任何容器。
+
+        Docker 未安装或未运行时返回明确提示；容器清单过长时按系统输出上限截断。
+        本工具不会启动 Docker Desktop：未运行时请先让用户手动启动，之后可用
+        docker_compose(action="up") 拉起项目服务；定位容器问题再用 docker_logs 查日志。
 
         Returns:
-            Docker 可用性和项目 Docker 配置概览
+            Docker 版本、项目 Docker 配置文件与运行中容器清单。
         """
         ctx.check_stopped()
         exe = shutil.which("docker")
@@ -104,14 +111,22 @@ def make_docker_tools(ctx: ToolContext):
     @tool(parse_docstring=True)
     async def docker_logs(container: str, tail: int = 100) -> str:
         """
-        查看 Docker 容器日志
+        查看 Docker 容器日志（只读）
+
+        适用：容器启动失败、服务行为异常时查看最后若干行日志。通过 docker logs --tail
+        读取，只显示 stdout/stderr，不会进入容器或修改容器状态。
+
+        container 可用容器名或 ID（可先用 docker_status 查看运行中的容器）；
+        tail 范围 1-1000，默认 100；日志过长时保留头尾。
+        容器已停止时仍可读取历史日志；需要实时跟踪新日志（类似 docker logs -f）时，
+        改用 terminal 手动执行并注意该命令会持续阻塞，需配合超时或手动停止。
 
         Args:
-            container: 容器名称或 ID
-            tail: 查看最后多少行日志，默认 100
+            container: 容器名称或 ID，不能为空。
+            tail: 读取最后多少行日志，默认 100，范围 1-1000。
 
         Returns:
-            容器日志内容
+            容器日志内容；容器不存在或读取失败时返回原因。
         """
         ctx.check_stopped()
         if not container.strip():
@@ -126,13 +141,20 @@ def make_docker_tools(ctx: ToolContext):
     @tool(parse_docstring=True)
     async def docker_compose(action: str = "up") -> str:
         """
-        管理 docker-compose 服务
+        管理 docker-compose 服务（启动/停止/重启/查看/构建）
+
+        适用：工作区存在 docker-compose.yml / compose.yml 时管理整套服务。action=up 以
+        后台方式启动（docker compose up -d）；down 停止并删除容器/网络（高风险，需审批）；
+        restart 重启；ps 查看状态；build 重新构建镜像。除 ps 外均会触发审批。
+
+        未找到 compose 配置文件时直接返回提示。命令在项目根目录执行；up/restart/build
+        最多等待 300 秒，日志过长时保留头尾。
 
         Args:
-            action: "up" 启动；"down" 停止并删除；"restart" 重启；"ps" 查看状态；"build" 构建
+            action: "up" 启动；"down" 停止并删除；"restart" 重启；"ps" 查看状态；"build" 构建。
 
         Returns:
-            操作结果
+            命令输出或完成提示；用户拒绝或执行失败时返回原因。
         """
         ctx.check_stopped()
         files = _detect_docker_files(ctx.workspace)
@@ -189,14 +211,24 @@ def make_docker_tools(ctx: ToolContext):
     @tool(parse_docstring=True)
     async def docker_exec(container: str, command: str) -> str:
         """
-        在 Docker 容器内执行命令（需要用户审批）
+        在 Docker 容器内执行命令（高风险，需要用户审批）
+
+        适用：检查容器内文件、环境变量、进程状态，或在容器内运行诊断命令。
+        通过 docker exec <容器> sh -c <命令> 执行，需要容器内存在 sh；不支持交互式命令。
+        会修改容器状态的命令（如删除文件、改配置）请先向用户确认影响。
+
+        必须提供容器名/ID 和命令；执行前会触发高风险审批。命令输出过长时保留头尾。
+
+        命令以非交互方式执行：不要使用 -it、vim、top 等需要终端的命令，也不要启动常驻进程；
+        查看服务日志用 docker_logs，管理整套服务用 docker_compose。退出码非 0 时会附带退出码
+        与输出，便于判断失败原因；容器没有 sh 或未运行时直接返回对应错误。
 
         Args:
-            container: 容器名称或 ID
-            command: 要在容器内执行的命令
+            container: 容器名称或 ID，不能为空。
+            command: 要在容器内执行的完整 shell 命令，不能为空。
 
         Returns:
-            命令输出
+            容器内命令的输出；用户拒绝或命令失败时返回原因。
         """
         ctx.check_stopped()
         if not container.strip():

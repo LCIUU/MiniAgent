@@ -522,6 +522,28 @@ def test_history_drops_orphan_tool_messages():
     assert any(isinstance(m, ToolMessage) and m.tool_call_id == "call_ok" for m in out)
 
 
+def test_timeline_thinking_uses_backend_duration():
+    """思考耗时以后端给出的真实时长为准：
+    - thinking_end 收口流式思考，不按后续工具开始时间计算（否则会算进参数生成时间）
+    - 被闸门暂存到轮末的短思考，事件自带 duration_ms，直接采用
+    """
+    from app.api.agent import _timeline_from_history
+
+    history = [
+        {"type": "thinking", "delta": "第一段", "_ts": 1.0},
+        {"type": "thinking", "delta": "思考", "_ts": 1.2},
+        {"type": "thinking_end", "duration_ms": 1500, "_ts": 2.5},
+        {"type": "tool_start", "tool": "read_file", "call_id": "c1", "args": {}, "_ts": 60.0},
+        {"type": "tool_end", "call_id": "c1", "status": "success", "result": "ok", "_ts": 60.1},
+        {"type": "thinking", "delta": "第二段短思考", "_ts": 61.0, "duration_ms": 900},
+        {"type": "tool_start", "tool": "read_file", "call_id": "c2", "args": {}, "_ts": 62.0},
+    ]
+    timeline = _timeline_from_history(history)
+
+    thinks = [it for it in timeline if it["kind"] == "thinking"]
+    assert [it["duration_ms"] for it in thinks] == [1500, 900]
+
+
 def test_timeline_reconstructs_compress_item():
     from app.api.agent import _timeline_from_history
 

@@ -119,13 +119,21 @@ def make_build_test_tools(ctx: ToolContext):
         kind: str = "test",
     ) -> str:
         """
-        运行项目的测试、构建或代码检查
+        运行项目的测试、构建或代码检查（自动识别项目类型）
+
+        适用：改完一批文件后快速验证项目是否仍能通过测试/构建/lint。自动识别 Python
+        （pytest -x -q / compileall / ruff check）、Node（包管理器的 test/build/lint）、
+        Go（go test/build/vet）、Rust（cargo test/build/clippy）、Java（mvn test/compile/checkstyle）。
+
+        命令在项目根目录执行，超时上限 600 秒；输出过长时保留头尾，失败时标注【失败】。
+        只跑相关测试或需要 -k 过滤时用 run_tests；需要自定义命令时用 terminal。
+        执行前会检查命令是否存在，缺失时提示安装依赖。
 
         Args:
-            kind: 检查类型，可选值 "test"（运行测试）、"build"（构建项目）、"lint"（代码风格检查）
+            kind: 检查类型："test" 运行测试；"build" 构建项目；"lint" 代码风格检查。
 
         Returns:
-            返回命令执行的退出码和输出结果
+            退出码与命令输出；超时、命令缺失或项目类型无法识别时返回原因。
         """
         ctx.check_stopped()
         if kind not in ("test", "build", "lint"):

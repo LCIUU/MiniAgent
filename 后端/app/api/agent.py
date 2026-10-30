@@ -313,9 +313,23 @@ def _timeline_from_history(history: list[dict[str, Any]]) -> list[dict[str, Any]
             last = timeline[-1] if timeline else None
             if last and last.get("kind") == "thinking" and not force_think:
                 last["text"] += delta
+                if ev.get("duration_ms") is not None:
+                    last["duration_ms"] = ev["duration_ms"]
             else:
-                timeline.append({"kind": "thinking", "text": delta, "start": ts, "duration_ms": None})
+                timeline.append({
+                    "kind": "thinking",
+                    "text": delta,
+                    "start": ts,
+                    "duration_ms": ev.get("duration_ms"),
+                })
             force_think = False
+        elif etype == "thinking_end":
+            # 思考段真实结束时刻由后端在生成结束时下发（含被闸门暂存的短思考），
+            # 用它收口，避免历史重建按下一个事件时间算出包含工具参数生成的假耗时
+            if timeline and timeline[-1].get("kind") == "thinking" and timeline[-1].get("duration_ms") is None:
+                timeline[-1]["duration_ms"] = ev.get("duration_ms") or round(
+                    (ts - timeline[-1].get("start", ts)) * 1000
+                )
         elif etype == "token":
             delta = ev.get("delta", "")
             if not delta:

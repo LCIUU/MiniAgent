@@ -50,16 +50,23 @@ def make_search_tools(ctx: ToolContext):
         max_results: int = MAX_RESULTS,
     ) -> str:
         """
-        在项目代码中搜索文本或正则表达式
+        在项目代码中搜索文本或正则表达式，返回文件路径、行号和内容
+
+        适用：定位函数定义、变量引用、报错信息、配置项等；先搜索缩小范围，再用 read_file
+        读取具体片段。支持正则语法，优先使用 ripgrep，未安装时回退到 Python 逐文件扫描。
+
+        自动忽略 .git、node_modules、.venv、dist、build 等目录；使用 ripgrep 时单个文件最多
+        返回 50 条匹配，总结果默认 200 条（上限 1000）；45 秒未完成会终止并提示缩小范围。
+        include 使用 glob 过滤（如 "*.py"、"*.tsx"）；path 可指定子目录或单个文件。
 
         Args:
-            pattern: 要搜索的正则表达式，例如函数名或错误信息关键词
-            include: 可选，文件类型过滤 glob，例如 "*.py" 只搜索 Python 文件
-            path: 可选，相对工作区的搜索目录/文件，不传则搜索整个工作区
-            max_results: 可选，最多返回的匹配条数（默认 200，上限 1000）
+            pattern: 要搜索的文本或正则表达式，例如 "login" 或 "def\\s+handle_\\w+"。
+            include: 文件类型过滤 glob，例如 "*.py"；留空表示所有文件。
+            path: 搜索起始目录或文件，相对当前工作区；留空表示整个工作区。
+            max_results: 最多返回的匹配条数，默认 200，上限 1000。
 
         Returns:
-            返回匹配的文件路径、行号和内容
+            匹配总数与 "相对路径:行号:行内容" 列表；无匹配时返回明确提示。
         """
         ctx.check_stopped()
         try:
@@ -143,14 +150,21 @@ def make_search_tools(ctx: ToolContext):
         path: str = "",
     ) -> str:
         """
-        列出工作区内的文件
+        按 glob 模式列出工作区内的文件（递归）
+
+        适用：按扩展名或目录结构查找文件（如所有 Python 文件、src 下所有 tsx），
+        比 list_dir 更适合跨目录查找。找到目标后可用 read_file / read_files 查看内容。
+
+        自动忽略 .git、node_modules、.venv、dist、build 等依赖/构建目录；最多返回 500 个文件。
+        pattern 同时匹配相对路径和文件名，例如 "**/*.py"、"src/**"、"*.css"。
+        path 可限定起始目录；若 path 指向单个文件则直接返回该文件路径。
 
         Args:
-            pattern: glob 匹配模式，例如 "**/*.py" 列出所有 Python 文件，"src/**" 列出 src 目录下的文件
-            path: 可选，相对工作区的起始目录，不传则从工作区根目录开始
+            pattern: glob 匹配模式，默认 "**/*"；"**/*.py" 匹配所有 Python 文件。
+            path: 起始目录，相对当前工作区；留空表示工作区根目录。
 
         Returns:
-            返回匹配的文件相对路径列表
+            匹配文件的相对路径列表（最多 500 个）；无匹配时返回提示。
         """
         ctx.check_stopped()
         try:
